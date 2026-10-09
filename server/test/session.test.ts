@@ -76,5 +76,48 @@ describe('session.close', () => {
     expect(vi.getTimerCount()).toBe(0);
     store.close();
   });
-});
 
+  it('makeEngine ném lỗi: phiên vẫn khóa hoàn toàn, mở lại với đúng mật khẩu thì được', async () => {
+    vi.useFakeTimers();
+    const store = openStore(':memory:');
+    const engine = stubEngine(async () => undefined);
+    let calls = 0;
+    const session = createSession(store, () => {
+      if (++calls === 1) throw new Error('hỏng lần đầu');
+      return engine;
+    });
+    expect(() => session.unlock(PASSWORD)).toThrow('hỏng lần đầu');
+    expect(session.vault).toBeNull();
+    expect(session.engine).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    session.unlock(PASSWORD);
+    expect(session.vault).not.toBeNull();
+    expect(session.engine).toBe(engine);
+    await session.close();
+    store.close();
+  });
+
+  it('engine.resume ném lỗi: phiên vẫn khóa hoàn toàn và không có timer', () => {
+    vi.useFakeTimers();
+    const store = openStore(':memory:');
+    const engine = stubEngine(async () => undefined);
+    engine.resume.mockImplementationOnce(() => { throw new Error('resume hỏng'); });
+    const session = createSession(store, () => engine);
+    expect(() => session.unlock(PASSWORD)).toThrow('resume hỏng');
+    expect(session.vault).toBeNull();
+    expect(session.engine).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    session.unlock(PASSWORD);
+    expect(session.engine).toBe(engine);
+    store.close();
+  });
+
+  it('bus không giới hạn listener (mỗi tab SSE một listener)', () => {
+    const store = openStore(':memory:');
+    const session = createSession(store, () => stubEngine(async () => undefined));
+    expect(session.bus.getMaxListeners()).toBe(0);
+    for (let i = 0; i < 12; i++) session.bus.on('change', () => undefined);
+    expect(session.bus.listenerCount('change')).toBe(12);
+    store.close();
+  });
+});

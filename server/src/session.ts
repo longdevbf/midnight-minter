@@ -29,6 +29,8 @@ export function createSession(
   opts: SessionOptions = {},
 ): Session {
   const bus = new EventEmitter();
+  // Mỗi tab SSE gắn một listener 'change'; không giới hạn để khỏi bị cảnh báo khi mở nhiều tab.
+  bus.setMaxListeners(0);
   const deadlineMs = opts.shutdownDeadlineMs ?? DEFAULT_SHUTDOWN_DEADLINE_MS;
   let vault: Vault | null = null;
   let engine: Engine | null = null;
@@ -53,10 +55,12 @@ export function createSession(
         const check = store.getMeta('vault_check') as string;
         if (v.decrypt(check) !== VERIFIER_PLAIN) throw new Error('Sai mật khẩu chủ');
       }
+      // Chỉ chuyển sang trạng thái mở khóa khi engine đã dựng và resume xong; lỗi thì phiên vẫn khóa hoàn toàn.
+      const e = makeEngine(v, bus);
+      e.resume();
       vault = v;
-      engine = makeEngine(vault, bus);
-      engine.resume();
-      timer = setInterval(() => engine?.pollWaiting(), POLL_INTERVAL_MS);
+      engine = e;
+      timer = setInterval(() => e.pollWaiting(), POLL_INTERVAL_MS);
       timer.unref();
     },
     verifyPassword(password) {

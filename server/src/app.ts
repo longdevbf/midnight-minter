@@ -31,15 +31,36 @@ const MintPayload = z.object({
   overrides: z.record(z.object({ name: z.string().optional(), symbol: z.string().optional() })).optional(),
 });
 
+/** Lỗi của Fastify/@fastify/multipart (theo err.code) được dịch sang tiếng Việt kèm mã HTTP phù hợp. */
+const KNOWN_ERRORS: Record<string, { status: number; message: string }> = {
+  FST_REQ_FILE_TOO_LARGE: { status: 413, message: 'Ảnh quá lớn (tối đa 5 MB)' },
+  FST_FILES_LIMIT: { status: 400, message: 'Chỉ được gửi một ảnh cho mỗi lần mint' },
+  FST_FIELDS_LIMIT: { status: 400, message: 'Dữ liệu mint có quá nhiều trường' },
+  FST_PARTS_LIMIT: { status: 400, message: 'Dữ liệu mint có quá nhiều phần' },
+  FST_INVALID_MULTIPART_CONTENT_TYPE: { status: 400, message: 'Yêu cầu mint phải là multipart/form-data' },
+  FST_MP_PREMATURE_CLOSE: { status: 400, message: 'Yêu cầu mint bị ngắt giữa chừng' },
+  FST_ERR_CTP_INVALID_JSON_BODY: { status: 400, message: 'Dữ liệu gửi lên không phải JSON hợp lệ' },
+  FST_ERR_CTP_EMPTY_JSON_BODY: { status: 400, message: 'Dữ liệu gửi lên không phải JSON hợp lệ' },
+  FST_ERR_CTP_BODY_TOO_LARGE: { status: 413, message: 'Dữ liệu gửi lên quá lớn' },
+  FST_ERR_CTP_INVALID_MEDIA_TYPE: { status: 415, message: 'Kiểu dữ liệu gửi lên không được hỗ trợ' },
+};
+
 export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
   await app.register(fastifyMultipart, { limits: { fileSize: 5 * 1024 * 1024 + 1, files: 1, fields: 5 } });
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof ValidationError) return fail(reply, 400, err.message);
-    const status = (err as { statusCode?: number } | null)?.statusCode ?? 500;
-    const message = err instanceof Error ? err.message : String(err);
-    return fail(reply, status, status >= 500 ? `Lỗi máy chủ: ${message}` : message);
+    const { code, statusCode } = (err ?? {}) as { code?: string; statusCode?: number };
+    const known = code ? KNOWN_ERRORS[code] : undefined;
+    if (known) return fail(reply, known.status, known.message);
+    const status = statusCode ?? 500;
+    if (status >= 500) {
+      // Chỉ ghi thông điệp lỗi, không ghi body/header/mật khẩu của request.
+      console.error('[api] lỗi:', err instanceof Error ? err.message : String(err));
+      return fail(reply, status, 'Lỗi máy chủ nội bộ. Xem log trên máy chạy app.');
+    }
+    return fail(reply, status, err instanceof Error ? err.message : String(err));
   });
 
   app.addHook('preHandler', async (req, reply) => {
@@ -69,7 +90,9 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     if (typeof password !== 'string' || password.length < 8) return fail(reply, 400, 'Mật khẩu chủ phải có ít nhất 8 ký tự');
     try {
       ctx.session.unlock(password);
-    } catch {
+    } catch (e) {
+      // Mật khẩu đúng nhưng dựng engine lỗi: báo lỗi máy chủ (phiên vẫn khóa), không nói "sai mật khẩu".
+      if (ctx.session.verifyPassword(password)) throw e;
       // Không lặp lại thông điệp lỗi gốc: nó có thể chứa dữ liệu từ kho mã hóa.
       return fail(reply, 401, 'Sai mật khẩu chủ');
     }
@@ -136,8 +159,8 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     let image: { data: Buffer; mime: string } | undefined;
     for await (const part of req.parts()) {
       if (part.type === 'file') {
+        // toBuffer() tự ném FST_REQ_FILE_TOO_LARGE khi vượt giới hạn; error handler dịch sang tiếng Việt.
         const data = await part.toBuffer();
-        if (part.file.truncated) return fail(reply, 400, 'Ảnh quá lớn (tối đa 5 MB)');
         // Tên file do client gửi không bao giờ được dùng lại (có thể chứa ký tự đường dẫn).
         image = { data, mime: part.mimetype };
       } else if (part.fieldname === 'payload') {
@@ -149,6 +172,9 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
       payload = MintPayload.parse(JSON.parse(payloadRaw ?? ''));
     } catch (e) {
       return fail(reply, 400, e instanceof z.ZodError ? e.issues[0].message : 'Dữ liệu mint không hợp lệ');
+    }
+    if (new Set(payload.walletIds).size !== payload.walletIds.length) {
+      return fail(reply, 400, 'Mỗi ví chỉ được chọn một lần trong một lô mint');
     }
     if (!image) return fail(reply, 400, 'Cần chọn ảnh cho token');
 

@@ -296,6 +296,115 @@ describe('API', () => {
     await closed;
   });
 
+  describe('lỗi multipart và dữ liệu mint', () => {
+    const tpl = { name: 'Papa', symbol: 'PAPA', decimals: 6, amount: '1' };
+
+    it('ảnh quá 5 MB bị từ chối 413 bằng tiếng Việt và không upload', async () => {
+      const w1 = await readyWallet();
+      const big = Buffer.concat([PNG, Buffer.alloc(6 * 1024 * 1024)]);
+      const { body, headers } = multipart({ walletIds: [w1.id], template: tpl }, { data: big, type: 'image/png', name: 'big.png' });
+      const r = await app.inject({ method: 'POST', url: '/api/mint', payload: body, headers });
+      expect(r.statusCode).toBe(413);
+      expect(r.json().error).toBe('Ảnh quá lớn (tối đa 5 MB)');
+      expect(pinned).toBe(0);
+    });
+
+    it('gửi hai ảnh bị từ chối 400 bằng tiếng Việt', async () => {
+      const w1 = await readyWallet();
+      const boundary = '----twoimages';
+      const file = (n: string) => [
+        Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="image"; filename="' + n + '"\r\nContent-Type: image/png\r\n\r\n'),
+        PNG,
+        Buffer.from('\r\n'),
+      ];
+      const body = Buffer.concat([
+        Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="payload"\r\n\r\n' + JSON.stringify({ walletIds: [w1.id], template: tpl }) + '\r\n'),
+        ...file('a.png'),
+        ...file('b.png'),
+        Buffer.from('--' + boundary + '--\r\n'),
+      ]);
+      const r = await app.inject({ method: 'POST', url: '/api/mint', payload: body, headers: { 'content-type': 'multipart/form-data; boundary=' + boundary } });
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error).toBe('Chỉ được gửi một ảnh cho mỗi lần mint');
+      expect(pinned).toBe(0);
+    });
+
+    it('quá nhiều trường bị từ chối 400 bằng tiếng Việt', async () => {
+      await readyWallet();
+      const boundary = '----manyfields';
+      const parts = Array.from({ length: 8 }, (_, i) => '--' + boundary + '\r\nContent-Disposition: form-data; name="f' + i + '"\r\n\r\nx\r\n');
+      const body = Buffer.from(parts.join('') + '--' + boundary + '--\r\n');
+      const r = await app.inject({ method: 'POST', url: '/api/mint', payload: body, headers: { 'content-type': 'multipart/form-data; boundary=' + boundary } });
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error).toBe('Dữ liệu mint có quá nhiều trường');
+      expect(pinned).toBe(0);
+    });
+
+    it('POST không phải multipart bị từ chối 400 bằng tiếng Việt', async () => {
+      const w1 = await readyWallet();
+      const r = await app.inject({ method: 'POST', url: '/api/mint', payload: { walletIds: [w1.id], template: tpl } });
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error).toBe('Yêu cầu mint phải là multipart/form-data');
+      expect(pinned).toBe(0);
+    });
+
+    it('walletIds trùng nhau bị từ chối trước khi upload', async () => {
+      const w1 = await readyWallet();
+      const { body, headers } = multipart({ walletIds: [w1.id, w1.id], template: tpl }, { data: PNG, type: 'image/png', name: 'a.png' });
+      const r = await app.inject({ method: 'POST', url: '/api/mint', payload: body, headers });
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error).toBe('Mỗi ví chỉ được chọn một lần trong một lô mint');
+      expect(pinned).toBe(0);
+    });
+  });
+
+  describe('thông báo lỗi', () => {
+    it('5xx không lộ thông điệp gốc, nhưng ghi log phía máy chủ', async () => {
+      await unlock();
+      const spyErr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      vi.spyOn(store, 'listWallets').mockImplementation(() => { throw new Error('chi-tiet-noi-bo-bi-mat'); });
+      try {
+        const r = await app.inject({ url: '/api/wallets' });
+        expect(r.statusCode).toBe(500);
+        expect(r.json().error).toBe('Lỗi máy chủ nội bộ. Xem log trên máy chạy app.');
+        expect(r.body).not.toContain('chi-tiet-noi-bo-bi-mat');
+        expect(spyErr).toHaveBeenCalledWith('[api] lỗi:', 'chi-tiet-noi-bo-bi-mat');
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it('mật khẩu đúng nhưng dựng engine lỗi: 500 chung, vẫn khóa, thử lại được', async () => {
+      const spyErr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        let calls = 0;
+        const stub = { resume() {}, pollWaiting() {}, closeAll: async () => undefined } as unknown as Engine;
+        const store2 = openStore(':memory:');
+        const session2 = createSession(store2, () => {
+          if (++calls === 1) throw new Error('hong-engine');
+          return stub;
+        });
+        const app2 = await buildApp({ store: store2, session: session2, ipfs: { pinImage: async () => ({ cid: '', uri: '', gatewayUrl: '' }) }, network, fundAmount: 1n, webDir: null });
+        const r1 = await app2.inject({ method: 'POST', url: '/api/unlock', payload: { password: PASSWORD } });
+        expect(r1.statusCode).toBe(500);
+        expect(r1.body).not.toContain('hong-engine');
+        expect((await app2.inject({ url: '/api/status' })).json().unlocked).toBe(false);
+        const r2 = await app2.inject({ method: 'POST', url: '/api/unlock', payload: { password: PASSWORD } });
+        expect(r2.statusCode).toBe(200);
+        await app2.close();
+        store2.close();
+      } finally {
+        spyErr.mockRestore();
+      }
+    });
+
+    it('JSON không hợp lệ trả về 400 bằng tiếng Việt', async () => {
+      const r = await app.inject({ method: 'POST', url: '/api/unlock', payload: '{khong-phai-json', headers: { 'content-type': 'application/json' } });
+      expect(r.statusCode).toBe(400);
+      expect(r.json().error).toBe('Dữ liệu gửi lên không phải JSON hợp lệ');
+    });
+  });
+
   it('retry token và ví trả về 202', async () => {
     const w1 = await readyWallet();
     expect((await app.inject({ method: 'POST', url: `/api/wallets/${w1.id}/retry` })).statusCode).toBe(202);
