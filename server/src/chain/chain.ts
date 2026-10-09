@@ -6,8 +6,10 @@ import { ensureDust, openWallet, readBalances, transferNight, waitNight } from '
 
 export const realChain: Chain = {
   async open(network: NetworkConfig, mnemonic: string): Promise<ChainWallet> {
-    const keys = await deriveKeys(mnemonic, network.networkId);
-    const psPassword = derivePrivateStatePassword(mnemonic);
+    // Chuẩn hóa như deriveKeys: seedphrase dán kèm khoảng trắng/xuống dòng vẫn ra cùng mật khẩu kho trạng thái.
+    const normalized = mnemonic.trim().split(/\s+/).join(' ');
+    const keys = await deriveKeys(normalized, network.networkId);
+    const psPassword = derivePrivateStatePassword(normalized);
     const w = await openWallet(network, keys);
     return {
       balances: (sync) => readBalances(w, sync),

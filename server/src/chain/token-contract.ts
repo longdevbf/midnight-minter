@@ -104,16 +104,21 @@ export async function deployToken(
   };
 }
 
-export async function mintToken(
-  w: OpenWallet,
-  a: MintArgs,
-  privateStatePassword: string,
-): Promise<{ txId: string; tokenColor: string; minted: bigint }> {
-  const before = await readTokenLedger(w, a.contractAddress, privateStatePassword);
-  // Idempotent: nếu lần trước đã mint thành công nhưng app tắt trước khi ghi DB thì không mint lại.
-  if (before.minted) {
-    return { txId: 'already-minted', tokenColor: Buffer.from(before.token_color).toString('hex'), minted: before.minted_amount };
-  }
+/** Phần ledger của contract token mà mintToken cần đọc. */
+export type TokenLedgerView = Pick<ReturnType<typeof ledger>, 'minted' | 'minted_amount' | 'token_color'>;
+
+export interface MintOptions {
+  /** Số lần đọc lại ledger sau khi giao dịch mint xong (indexer có thể trễ). Mặc định 10. */
+  attempts?: number;
+  /** Nghỉ giữa hai lần đọc lại. Mặc định 3 giây. */
+  delayMs?: number;
+  /** Đọc ledger contract (tiêm được để kiểm thử). Mặc định readTokenLedger. */
+  readLedger?: (w: OpenWallet, contractAddress: string, privateStatePassword: string) => Promise<TokenLedgerView>;
+  /** Gửi giao dịch mint, chờ finalize và trả txId (tiêm được để kiểm thử). */
+  submitMint?: (w: OpenWallet, a: MintArgs, privateStatePassword: string) => Promise<string>;
+}
+
+async function submitMintTx(w: OpenWallet, a: MintArgs, privateStatePassword: string): Promise<string> {
   const providers = buildProviders(w, privateStatePassword);
   const found = await findDeployedContract(providers, {
     contractAddress: a.contractAddress,
@@ -122,9 +127,42 @@ export async function mintToken(
     initialPrivateState: {},
   });
   const result = await found.callTx.mint(a.ownerSecret, a.baseUnits, { bytes: w.keys.unshieldedAddressBytes });
-  const after = await readTokenLedger(w, a.contractAddress, privateStatePassword);
-  if (!after.minted || after.minted_amount !== a.baseUnits) {
-    throw new Error('Đã gửi giao dịch mint nhưng ledger trên chuỗi chưa phản ánh đúng số lượng');
+  return result.public.txId;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+export async function mintToken(
+  w: OpenWallet,
+  a: MintArgs,
+  privateStatePassword: string,
+  opts: MintOptions = {},
+): Promise<{ txId: string; tokenColor: string; minted: bigint }> {
+  const read = opts.readLedger ?? readTokenLedger;
+  const attempts = opts.attempts ?? 10;
+  const delayMs = opts.delayMs ?? 3_000;
+
+  const before = await read(w, a.contractAddress, privateStatePassword);
+  // Idempotent: nếu lần trước đã mint thành công nhưng app tắt trước khi ghi DB thì không mint lại.
+  // Contract chỉ cho mint đúng một lần: nếu minted_amount khác a.baseUnits (bản ghi DB lệch với chuỗi) vẫn trả
+  // "already-minted" cùng số lượng THẬT trên chuỗi (minted), không ném lỗi — mint lại là không thể.
+  if (before.minted) {
+    return { txId: 'already-minted', tokenColor: Buffer.from(before.token_color).toString('hex'), minted: before.minted_amount };
   }
-  return { txId: result.public.txId, tokenColor: Buffer.from(after.token_color).toString('hex'), minted: after.minted_amount };
+  const txId = await (opts.submitMint ?? submitMintTx)(w, a, privateStatePassword);
+  // Giao dịch đã finalize nhưng indexer có thể chưa kịp phản ánh: đọc lại vài lần, nếu không txId thật bị mất
+  // (lần thử lại sau đó chỉ thấy "already-minted").
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await sleep(delayMs);
+    let after: TokenLedgerView;
+    try {
+      after = await read(w, a.contractAddress, privateStatePassword);
+    } catch {
+      continue; // lỗi đọc tạm thời (indexer trễ/502): thử lại ở vòng sau
+    }
+    if (after.minted && after.minted_amount === a.baseUnits) {
+      return { txId, tokenColor: Buffer.from(after.token_color).toString('hex'), minted: after.minted_amount };
+    }
+  }
+  throw new Error('Đã gửi giao dịch mint nhưng ledger trên chuỗi chưa phản ánh đúng số lượng');
 }
