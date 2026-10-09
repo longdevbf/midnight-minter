@@ -1,26 +1,19 @@
 import type { NetworkConfig } from '../config/networks';
 import { deriveKeys } from './keys';
 import { derivePrivateStatePassword, deployToken, mintToken } from './token-contract';
-import type { Chain, ChainWallet } from './types';
-import { ensureDust, openWallet, readBalances, transferNight, waitNight } from './wallet-runtime';
+import type { Chain, ChainWallet, WalletSnapshot } from './types';
+import { ensureDust, openWallet, readBalances, snapshotWallet, transferNight, waitNight } from './wallet-runtime';
 
 export const realChain: Chain = {
-  async open(network: NetworkConfig, mnemonic: string): Promise<ChainWallet> {
+  async open(network: NetworkConfig, mnemonic: string, snapshot?: WalletSnapshot): Promise<ChainWallet> {
     // Chuẩn hóa như deriveKeys: seedphrase dán kèm khoảng trắng/xuống dòng vẫn ra cùng mật khẩu kho trạng thái.
     const normalized = mnemonic.trim().split(/\s+/).join(' ');
     const keys = await deriveKeys(normalized, network.networkId);
     const psPassword = derivePrivateStatePassword(normalized);
-    const w = await openWallet(network, keys);
+    const w = await openWallet(network, keys, snapshot);
     return {
-      restored: false,
-      snapshot: async () => {
-        const [shielded, unshielded, dust] = await Promise.all([
-          w.facade.shielded.serializeState(),
-          w.facade.unshielded.serializeState(),
-          w.facade.dust.serializeState(),
-        ]);
-        return { shielded, unshielded, dust };
-      },
+      restored: w.restored,
+      snapshot: () => snapshotWallet(w),
       balances: (sync) => readBalances(w, sync),
       waitNight: (min, timeoutMs) => waitNight(w, min, timeoutMs),
       ensureDust: () => ensureDust(w),
