@@ -15,6 +15,15 @@ const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3
 const PASSWORD = 'mat-khau-chu-123';
 const network = getNetworkConfig('preview', {});
 
+// Engine ghi log trạng thái snapshot (console.log): chặn để đầu ra test sạch.
+let silenceLog: { mockRestore(): void } | undefined;
+beforeEach(() => {
+  silenceLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+});
+afterEach(() => {
+  silenceLog?.mockRestore();
+});
+
 function multipart(payload: unknown, image?: { data: Buffer; type: string; name: string }) {
   const boundary = '----testboundary';
   const parts: Buffer[] = [];
