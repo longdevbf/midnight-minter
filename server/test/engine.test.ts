@@ -601,6 +601,33 @@ describe('Engine — ví con không mở khi ví tổng chưa sẵn sàng (F2)',
   });
 });
 
+describe('Engine — mở ví quá thời gian không rò ví (F6)', () => {
+  it('open xong sau khi đã quá thời gian: ví failed(syncing) quá thời gian chờ, ví mở muộn được đóng', async () => {
+    const ctx = setup();
+    await readyTreasury(ctx);
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    // Giả lập app khởi động lại khi ví con đang ở bước syncing: engine mới, chưa có ví nào mở sẵn.
+    ctx.store.updateWallet(c.id, { status: 'failed', failedStep: 'syncing', message: 'x' });
+    const engine2 = new Engine({
+      store: ctx.store, vault: ctx.vault, chain: ctx.fake.chain, network, bus: ctx.bus, fundAmount: FUND, syncTimeoutMs: 30,
+    });
+    ctx.fake.state.openDelayMs = 100;
+    const closedBefore = ctx.fake.state.closed;
+    engine2.retryWallet(c.id);
+    await engine2.idle();
+    const w = ctx.store.getWallet(c.id)!;
+    expect(w.status).toBe('failed');
+    expect(w.failedStep).toBe('syncing');
+    expect(w.message).toMatch(/quá thời gian chờ/);
+    expect(ctx.fake.state.closed).toBe(closedBefore); // open chưa xong
+    await new Promise((r) => setTimeout(r, 200));
+    expect(ctx.fake.state.closed).toBe(closedBefore + 1); // ví mở muộn đã được đóng
+    await engine2.closeAll();
+    await ctx.engine.closeAll();
+  });
+});
+
 describe('Engine — thời gian chờ riêng cho bước DUST (F3)', () => {
   it('ensureDust chậm hơn chainCallTimeoutMs nhưng trong dustTimeoutMs: ready, không đóng ví', async () => {
     const ctx = setup({ chainCallTimeoutMs: 30, dustTimeoutMs: 500 });

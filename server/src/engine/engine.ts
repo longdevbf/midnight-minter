@@ -201,11 +201,15 @@ export class Engine {
   private async getOpen(w: WalletRecord): Promise<ChainWallet> {
     const cached = this.open.get(w.id);
     if (cached) return cached;
-    const opened = await withTimeout(
-      this.d.chain.open(this.d.network, this.d.vault.decrypt(w.encryptedMnemonic)),
-      this.d.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS,
-      'Mở ví',
-    );
+    const pending = this.d.chain.open(this.d.network, this.d.vault.decrypt(w.encryptedMnemonic));
+    let opened: ChainWallet;
+    try {
+      opened = await withTimeout(pending, this.d.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS, 'Mở ví');
+    } catch (e) {
+      // Quá hạn nhưng open vẫn có thể xong về sau: đóng ví đó ngay khi có, nếu không nó đồng bộ ngầm mãi.
+      if (e instanceof ChainTimeoutError) pending.then((late) => late.close()).catch(() => undefined);
+      throw e;
+    }
     this.open.set(w.id, opened);
     await this.trim();
     return opened;

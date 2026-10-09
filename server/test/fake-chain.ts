@@ -18,6 +18,8 @@ export interface FakeState {
   holdCredit: boolean;
   pendingCredits: Array<{ to: string; amount: bigint }>;
   opened: number;
+  /** >0: open() chỉ trả ví sau ngần này ms (như đồng bộ lần đầu chậm) */
+  openDelayMs: number;
   closed: number;
   balanceCalls: number;
 }
@@ -29,7 +31,7 @@ export interface FakeState {
 export function makeFakeChain() {
   const state: FakeState = {
     night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
-    opened: 0, closed: 0, balanceCalls: 0,
+    opened: 0, openDelayMs: 0, closed: 0, balanceCalls: 0,
   };
   const addrToMnemonic = new Map<string, string>();
   let seq = 0;
@@ -51,6 +53,7 @@ export function makeFakeChain() {
     async open(network: NetworkConfig, mnemonic: string): Promise<ChainWallet> {
       state.opened++;
       addrToMnemonic.set((await deriveKeys(mnemonic, network.networkId)).unshieldedAddress, mnemonic);
+      if (state.openDelayMs > 0) await new Promise((r) => setTimeout(r, state.openDelayMs));
       const w: ChainWallet = {
         async balances(sync: boolean) {
           state.balanceCalls++;
