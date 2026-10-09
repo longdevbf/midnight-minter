@@ -11,6 +11,7 @@ const EnvSchema = z.object({
   DATA_DIR: z.string().min(1).default('data'),
   IPFS_GATEWAY: z.string().url().default('https://gateway.pinata.cloud/ipfs/'),
   FUND_AMOUNT: z.coerce.number().int().positive().default(100),
+  MAX_OPEN_WALLETS: z.coerce.number().int().min(1).max(20).default(6),
 });
 
 export interface AppEnv {
@@ -23,6 +24,8 @@ export interface AppEnv {
   ipfsGateway: string;
   /** đơn vị nhỏ nhất của tNIGHT cấp cho mỗi ví con */
   fundAmount: bigint;
+  /** số ví mở (đồng bộ) cùng lúc tối đa trong Engine, 1–20 */
+  maxOpenWallets: number;
 }
 
 export function loadEnv(src: Record<string, string | undefined> = process.env): AppEnv {
@@ -46,5 +49,6 @@ export function loadEnv(src: Record<string, string | undefined> = process.env): 
     dataDir: e.DATA_DIR,
     ipfsGateway: e.IPFS_GATEWAY.endsWith('/') ? e.IPFS_GATEWAY : `${e.IPFS_GATEWAY}/`,
     fundAmount: BigInt(e.FUND_AMOUNT) * 10n ** BigInt(NIGHT_DECIMALS),
+    maxOpenWallets: e.MAX_OPEN_WALLETS,
   };
 }

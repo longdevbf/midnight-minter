@@ -23,6 +23,8 @@ export interface FakeState {
   /** >0: open() chỉ trả ví sau ngần này ms (như đồng bộ lần đầu chậm) */
   openDelayMs: number;
   closed: number;
+  /** mnemonic của từng ví bị đóng, theo thứ tự */
+  closedMnemonics: string[];
   balanceCalls: number;
 }
 
@@ -33,7 +35,7 @@ export interface FakeState {
 export function makeFakeChain() {
   const state: FakeState = {
     night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), failCount: new Map(), hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
-    opened: 0, openDelayMs: 0, closed: 0, balanceCalls: 0,
+    opened: 0, openDelayMs: 0, closed: 0, closedMnemonics: [], balanceCalls: 0,
   };
   const addrToMnemonic = new Map<string, string>();
   let seq = 0;
@@ -114,6 +116,7 @@ export function makeFakeChain() {
         },
         async close() {
           state.closed++;
+          state.closedMnemonics.push(mnemonic);
         },
       };
       return w;

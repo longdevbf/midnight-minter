@@ -29,11 +29,17 @@ export interface EngineDeps {
   dustTimeoutMs?: number;
   /** Chờ bao lâu trước khi tự thử lại lỗi tạm ở bước syncing/dust_pending. Mặc định 60 giây. */
   autoRetryDelayMs?: number;
+  /**
+   * Số ví mở cùng lúc tối đa (mỗi ví mở giữ WebSocket và đồng bộ ngầm; đóng rồi mở lại = đồng bộ lại từ đầu).
+   * Mặc định 6. Ví tổng không bị đóng bớt.
+   */
+  maxOpenWallets?: number;
 }
 
 type WalletStep = 'funding' | 'syncing' | 'dust_pending';
 const STEPS: WalletStep[] = ['funding', 'syncing', 'dust_pending'];
-const MAX_OPEN = 3;
+/** Số ví mở (đang đồng bộ trong bộ nhớ) tối đa cùng lúc; ví tổng không bao giờ bị đóng bớt. */
+const DEFAULT_MAX_OPEN_WALLETS = 6;
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** Dấu bền vững trong bảng meta: đã gửi lệnh chuyển tNIGHT cho ví con này. */
@@ -233,7 +239,8 @@ export class Engine {
   }
 
   private async trim() {
-    while (this.open.size > MAX_OPEN) {
+    const max = Math.max(1, Math.floor(this.d.maxOpenWallets ?? DEFAULT_MAX_OPEN_WALLETS) || DEFAULT_MAX_OPEN_WALLETS);
+    while (this.open.size > max) {
       const victim = [...this.open.keys()].find((id) => this.d.store.getWallet(id)?.kind !== 'treasury');
       if (!victim) return;
       const w = this.open.get(victim) as ChainWallet;

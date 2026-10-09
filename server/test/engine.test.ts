@@ -145,12 +145,27 @@ describe('Engine — ví', () => {
     expect(ctx.events.some((e) => e.kind === 'wallet')).toBe(true);
   });
 
-  it('đóng bớt ví cũ khi mở quá 3 ví cùng lúc, giữ ví tổng', async () => {
+  it('maxOpenWallets: 2 — đóng bớt ví cũ khi mở quá 2 ví cùng lúc, giữ ví tổng (R2)', async () => {
+    ctx = setup({ maxOpenWallets: 2 });
+    const tid = await readyTreasury(ctx);
+    const children = await ctx.engine.createWallets(4, 'child');
+    await ctx.engine.idle();
+    for (const c of children) expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+    expect(ctx.fake.state.closed).toBeGreaterThan(0);
+    expect(ctx.fake.state.opened - ctx.fake.state.closed).toBeLessThanOrEqual(2);
+    expect(ctx.fake.state.closedMnemonics).not.toContain(mnemonicOf(ctx, tid)); // ví tổng không bị đóng
+    expect(ctx.store.getTreasury()!.status).toBe('ready');
+  });
+
+  it('mặc định giữ tới 6 ví mở: ví tổng + 4 ví con không đóng ví nào (R2)', async () => {
     await readyTreasury(ctx);
     await ctx.engine.createWallets(4, 'child');
     await ctx.engine.idle();
-    expect(ctx.fake.state.closed).toBeGreaterThan(0);
-    expect(ctx.store.getTreasury()!.status).toBe('ready');
+    expect(ctx.fake.state.opened).toBe(5);
+    expect(ctx.fake.state.closed).toBe(0);
+    await ctx.engine.createWallets(2, 'child');
+    await ctx.engine.idle();
+    expect(ctx.fake.state.opened - ctx.fake.state.closed).toBe(6);
   });
 });
 
