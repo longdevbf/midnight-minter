@@ -12,6 +12,8 @@ export interface FakeState {
   failOnce: Set<string>;
   /** tên thao tác → số lần còn phải ném lỗi (như failOnce nhưng nhiều lần liên tiếp) */
   failCount: Map<string, number>;
+  /** nếu đặt: nội dung lỗi giả lập (thay cho "lỗi giả lập ở <tên>"), vd. để kiểm tra che khóa bí mật */
+  failMessage: string | null;
   /** tên thao tác ("ensureDust" | "transfer" | "transferAfter" (treo sau khi đã trừ tiền) | "deploy" | "mint" | "balances" (chỉ khi sync=true)) sẽ treo mãi, như khi chờ finalization không bao giờ tới */
   hang: Set<string>;
   /** tên thao tác → số ms chờ trước khi chạy tiếp (vd. "ensureDust" chậm nhưng vẫn xong) */
@@ -34,7 +36,7 @@ export interface FakeState {
  */
 export function makeFakeChain() {
   const state: FakeState = {
-    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), failCount: new Map(), hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
+    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), failCount: new Map(), failMessage: null, hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
     opened: 0, openDelayMs: 0, closed: 0, closedMnemonics: [], balanceCalls: 0,
   };
   const addrToMnemonic = new Map<string, string>();
@@ -47,14 +49,15 @@ export function makeFakeChain() {
   };
 
   const maybeFail = (name: string) => {
+    const fail = () => new Error(state.failMessage ?? `lỗi giả lập ở ${name}`);
     if (state.failOnce.has(name)) {
       state.failOnce.delete(name);
-      throw new Error(`lỗi giả lập ở ${name}`);
+      throw fail();
     }
     const left = state.failCount.get(name) ?? 0;
     if (left > 0) {
       state.failCount.set(name, left - 1);
-      throw new Error(`lỗi giả lập ở ${name}`);
+      throw fail();
     }
   };
 

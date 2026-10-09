@@ -34,6 +34,11 @@ export interface EngineDeps {
    * Mặc định 6. Ví tổng không bị đóng bớt.
    */
   maxOpenWallets?: number;
+  /**
+   * Che bí mật (khóa Blockfrost/Pinata…) trong thông báo lỗi của SDK trước khi lưu vào DB/gửi lên giao diện.
+   * Mặc định giữ nguyên.
+   */
+  redact?: (s: string) => string;
 }
 
 type WalletStep = 'funding' | 'syncing' | 'dust_pending';
@@ -41,7 +46,7 @@ const STEPS: WalletStep[] = ['funding', 'syncing', 'dust_pending'];
 /** Số ví mở (đang đồng bộ trong bộ nhớ) tối đa cùng lúc; ví tổng không bao giờ bị đóng bớt. */
 const DEFAULT_MAX_OPEN_WALLETS = 6;
 
-const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const rawErrMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** Dấu bền vững trong bảng meta: đã gửi lệnh chuyển tNIGHT cho ví con này. */
 const fundingKey = (walletId: string) => `funding_sent:${walletId}`;
 const night = (v: bigint) => `${formatUnits(v, NIGHT_DECIMALS)} tNIGHT`;
@@ -174,6 +179,11 @@ export class Engine {
 
   // ---------------------------------------------------------------- nội bộ
 
+  /** Thông báo lỗi để lưu/hiển thị: luôn đi qua redact (lỗi SDK có thể chứa URL kèm project_id=<khóa>). */
+  private errMsg(e: unknown): string {
+    return (this.d.redact ?? ((s: string) => s))(rawErrMsg(e));
+  }
+
   private emit(kind: 'wallet' | 'token', id: string) {
     this.d.bus.emit('change', { kind, id });
   }
@@ -271,7 +281,7 @@ export class Engine {
         if (result === 'wait') return; // giữ nguyên status, message đã được ghi
       } catch (e) {
         if (this.scheduleAutoRetry(id, step, e)) return;
-        this.patchWallet(id, { status: 'failed', failedStep: step, message: errMsg(e) });
+        this.patchWallet(id, { status: 'failed', failedStep: step, message: this.errMsg(e) });
         return;
       }
     }
@@ -402,7 +412,7 @@ export class Engine {
     this.patchWallet(id, {
       status: step,
       failedStep: null,
-      message: `Lỗi tạm thời, tự thử lại sau ${formatDuration(delay)} (lần ${attempt}/${AUTO_RETRY_MAX}): ${errMsg(e)}`,
+      message: `Lỗi tạm thời, tự thử lại sau ${formatDuration(delay)} (lần ${attempt}/${AUTO_RETRY_MAX}): ${this.errMsg(e)}`,
     });
     const old = this.autoRetryTimers.get(id);
     if (old) clearTimeout(old);
@@ -438,7 +448,7 @@ export class Engine {
       const cw = await this.getOpen(w);
       this.saveBalances(id, await this.syncBalances(w.id, cw));
     } catch (e) {
-      this.patchWallet(id, { message: `Không làm mới được số dư: ${errMsg(e)}` });
+      this.patchWallet(id, { message: `Không làm mới được số dư: ${this.errMsg(e)}` });
     }
   }
 
@@ -499,7 +509,7 @@ export class Engine {
         /* token đã done; số dư sẽ được cập nhật ở lần làm mới sau, không được ghi đè trạng thái */
       }
     } catch (e) {
-      this.patchToken(id, { status: 'failed', failedStep: step, message: errMsg(e) });
+      this.patchToken(id, { status: 'failed', failedStep: step, message: this.errMsg(e) });
     }
   }
 }

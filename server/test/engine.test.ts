@@ -760,6 +760,78 @@ describe('Engine — tự thử lại lỗi tạm ở bước syncing/dust_pendi
   });
 });
 
+describe('Engine — che khóa bí mật trong thông báo lỗi đã lưu (F4, phía Engine)', () => {
+  const KEY = 'previewKeyAbc123SECRET';
+  const redact = (s: string) => s.split(KEY).join('***');
+  const leaky = `RPC-CORE: disconnected from wss://rpc.example/?project_id=${KEY}`;
+
+  it('lỗi ở bước funding: message của ví có *** và không có khóa', async () => {
+    const ctx = setup({ redact });
+    await readyTreasury(ctx);
+    ctx.fake.state.failMessage = leaky;
+    ctx.fake.state.failOnce.add('transfer');
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const w = ctx.store.getWallet(c.id)!;
+    expect(w.status).toBe('failed');
+    expect(w.message).toContain('***');
+    expect(w.message).not.toContain(KEY);
+  });
+
+  it('lỗi tạm đang chờ tự thử lại: message cũng được che', async () => {
+    const ctx = setup({ redact, autoRetryDelayMs: 60_000 });
+    await readyTreasury(ctx);
+    ctx.fake.state.failMessage = leaky;
+    ctx.fake.state.failOnce.add('ensureDust');
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const w = ctx.store.getWallet(c.id)!;
+    expect(w.message).toMatch(/Lỗi tạm thời/);
+    expect(w.message).toContain('***');
+    expect(w.message).not.toContain(KEY);
+    await ctx.engine.closeAll(); // huỷ hẹn giờ 60 s
+  });
+
+  it('làm mới số dư lỗi: message có *** và không có khóa', async () => {
+    const ctx = setup({ redact });
+    const tid = await readyTreasury(ctx);
+    ctx.fake.state.failMessage = leaky;
+    ctx.fake.state.failOnce.add('balances');
+    ctx.engine.refreshWallet(tid);
+    await ctx.engine.idle();
+    const w = ctx.store.getWallet(tid)!;
+    expect(w.message).toMatch(/Không làm mới được số dư/);
+    expect(w.message).toContain('***');
+    expect(w.message).not.toContain(KEY);
+  });
+
+  it('token failOnce với lỗi chứa khóa: message của token có *** và không có khóa', async () => {
+    const ctx = setup({ redact });
+    await readyTreasury(ctx);
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    insertTok(ctx, c.id);
+    ctx.fake.state.failMessage = leaky;
+    ctx.fake.state.failOnce.add('deploy');
+    ctx.engine.enqueueToken('tok1');
+    await ctx.engine.idle();
+    const t = ctx.store.getToken('tok1')!;
+    expect(t.status).toBe('failed');
+    expect(t.message).toContain('***');
+    expect(t.message).not.toContain(KEY);
+  });
+
+  it('không truyền redact: giữ nguyên thông báo (mặc định identity)', async () => {
+    const ctx = setup();
+    await readyTreasury(ctx);
+    ctx.fake.state.failMessage = leaky;
+    ctx.fake.state.failOnce.add('transfer');
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.message).toBe(leaky);
+  });
+});
+
 describe('Engine — thời gian chờ riêng cho bước DUST (F3)', () => {
   it('ensureDust chậm hơn chainCallTimeoutMs nhưng trong dustTimeoutMs: ready, không đóng ví', async () => {
     const ctx = setup({ chainCallTimeoutMs: 30, dustTimeoutMs: 500 });
