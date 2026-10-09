@@ -44,7 +44,23 @@ CREATE TABLE IF NOT EXISTS tokens (
   status TEXT NOT NULL, failed_step TEXT, message TEXT, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_wallet ON tokens(wallet_id);
+CREATE TABLE IF NOT EXISTS wallet_state (
+  wallet_id TEXT PRIMARY KEY REFERENCES wallets(id),
+  network TEXT NOT NULL, sdk_version TEXT NOT NULL, blob TEXT NOT NULL, saved_at INTEGER NOT NULL
+);
 `;
+
+/**
+ * Ảnh chụp trạng thái ví đã đồng bộ (R1). `blob` LUÔN là bản mã hóa bằng vault; chỉ network/sdkVersion/savedAt
+ * là văn bản thường.
+ */
+export interface WalletStateRecord {
+  network: string;
+  sdkVersion: string;
+  blob: string;
+  savedAt: number;
+}
+const WALLET_STATE_COLUMNS = ['network', 'sdkVersion', 'blob', 'savedAt'] as const;
 
 export interface Store {
   getMeta(key: string): string | null;
@@ -61,6 +77,10 @@ export interface Store {
   countTokens(walletId: string): number;
   updateToken(id: string, patch: Partial<TokenRecord>): TokenRecord;
   listIncompleteTokens(): TokenRecord[];
+  getWalletState(walletId: string): WalletStateRecord | null;
+  /** Ghi (hoặc ghi đè) ảnh chụp trạng thái của ví. */
+  setWalletState(walletId: string, rec: WalletStateRecord): void;
+  deleteWalletState(walletId: string): void;
   close(): void;
 }
 
@@ -128,6 +148,28 @@ export function openStore(path: string): Store {
     },
     listIncompleteTokens: () =>
       many<TokenRecord>("SELECT * FROM tokens WHERE status IN ('queued','deploying','minting') ORDER BY created_at ASC"),
+    getWalletState: (walletId) =>
+      one<WalletStateRecord>(
+        'SELECT network, sdk_version, blob, saved_at FROM wallet_state WHERE wallet_id = ?',
+        walletId,
+      ),
+    setWalletState(walletId, rec) {
+      const allowed = new Set<string>(WALLET_STATE_COLUMNS);
+      for (const k of Object.keys(rec)) {
+        if (!allowed.has(k)) throw new Error(`Cột ${k} không hợp lệ`);
+      }
+      for (const k of WALLET_STATE_COLUMNS) {
+        if (rec[k] === undefined) throw new Error(`Thiếu cột ${k}`);
+      }
+      const cols = WALLET_STATE_COLUMNS.map(toSnake);
+      db.prepare(
+        `INSERT INTO wallet_state (wallet_id, ${cols.join(', ')}) VALUES (@wallet_id, ${cols.map((c) => `@${c}`).join(', ')}) ` +
+          `ON CONFLICT(wallet_id) DO UPDATE SET ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}`,
+      ).run({ wallet_id: walletId, ...Object.fromEntries(WALLET_STATE_COLUMNS.map((k) => [toSnake(k), rec[k]])) });
+    },
+    deleteWalletState: (walletId) => {
+      db.prepare('DELETE FROM wallet_state WHERE wallet_id = ?').run(walletId);
+    },
     close: () => db.close(),
   };
 }

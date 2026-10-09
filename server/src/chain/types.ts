@@ -15,7 +15,21 @@ export interface MintArgs {
   baseUnits: bigint;
 }
 
+/**
+ * Trạng thái đã đồng bộ của ba ví con (shielded/unshielded/dust) theo định dạng serializeState() của SDK.
+ * Chứa thông tin riêng tư của ví: chỉ được lưu sau khi mã hóa bằng vault.
+ */
+export interface WalletSnapshot {
+  shielded: string;
+  unshielded: string;
+  dust: string;
+}
+
 export interface ChainWallet {
+  /** true chỉ khi lần mở này thực sự khởi động từ snapshot (không phải đồng bộ lại từ đầu). */
+  readonly restored: boolean;
+  /** Chụp trạng thái hiện tại của ba ví con (để lần mở sau khỏi đồng bộ lại từ đầu). */
+  snapshot(): Promise<WalletSnapshot>;
   balances(sync: boolean): Promise<{ night: bigint; dust: bigint; synced: boolean }>;
   waitNight(min: bigint, timeoutMs: number): Promise<boolean>;
   ensureDust(): Promise<void>;
@@ -26,5 +40,6 @@ export interface ChainWallet {
 }
 
 export interface Chain {
-  open(network: NetworkConfig, mnemonic: string): Promise<ChainWallet>;
+  /** Có `snapshot` thì thử khôi phục từ đó; khôi phục không được thì tự đồng bộ lại từ đầu (restored = false). */
+  open(network: NetworkConfig, mnemonic: string, snapshot?: WalletSnapshot): Promise<ChainWallet>;
 }

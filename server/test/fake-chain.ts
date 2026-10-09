@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { deriveKeys } from '../src/chain/keys';
 import type { NetworkConfig } from '../src/config/networks';
-import type { Chain, ChainWallet, DeployArgs, MintArgs } from '../src/chain/types';
+import type { Chain, ChainWallet, DeployArgs, MintArgs, WalletSnapshot } from '../src/chain/types';
 
 export interface FakeState {
   /** số dư theo mnemonic */
@@ -28,7 +29,19 @@ export interface FakeState {
   /** mnemonic của từng ví bị đóng, theo thứ tự */
   closedMnemonics: string[];
   balanceCalls: number;
+  /** snapshot truyền vào từng lần open (null = mở không có snapshot), theo thứ tự */
+  openSnapshots: Array<WalletSnapshot | null>;
+  /** true: giả lập snapshot không dùng được, open tự đồng bộ lại từ đầu (restored = false) */
+  rejectSnapshot: boolean;
+  /** số lần gọi snapshot() (kể cả lần lỗi/treo); "snapshot" dùng được với failOnce/failCount/hang/delayMs */
+  snapshotCalls: number;
 }
+
+/** Snapshot giả của một ví: xác định theo mnemonic, không chứa mnemonic. */
+export const fakeSnapshotOf = (mnemonic: string): WalletSnapshot => {
+  const h = createHash('sha256').update(mnemonic).digest('hex').slice(0, 16);
+  return { shielded: `S:${h}`, unshielded: `U:${h}`, dust: `D:${h}` };
+};
 
 /**
  * Chain giả. Mỗi lần `open` đăng ký địa chỉ ví → mnemonic, nên chuyển NIGHT tới một ví
@@ -38,6 +51,7 @@ export function makeFakeChain() {
   const state: FakeState = {
     night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), failCount: new Map(), failMessage: null, hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
     opened: 0, openDelayMs: 0, closed: 0, closedMnemonics: [], balanceCalls: 0,
+    openSnapshots: [], rejectSnapshot: false, snapshotCalls: 0,
   };
   const addrToMnemonic = new Map<string, string>();
   let seq = 0;
@@ -62,11 +76,19 @@ export function makeFakeChain() {
   };
 
   const chain: Chain = {
-    async open(network: NetworkConfig, mnemonic: string): Promise<ChainWallet> {
+    async open(network: NetworkConfig, mnemonic: string, snapshot?: WalletSnapshot): Promise<ChainWallet> {
       state.opened++;
+      state.openSnapshots.push(snapshot ?? null);
       addrToMnemonic.set((await deriveKeys(mnemonic, network.networkId)).unshieldedAddress, mnemonic);
       if (state.openDelayMs > 0) await new Promise((r) => setTimeout(r, state.openDelayMs));
       const w: ChainWallet = {
+        restored: !!snapshot && !state.rejectSnapshot,
+        async snapshot() {
+          state.snapshotCalls++;
+          await maybeHang('snapshot');
+          maybeFail('snapshot');
+          return fakeSnapshotOf(mnemonic);
+        },
         async balances(sync: boolean) {
           state.balanceCalls++;
           if (sync) {

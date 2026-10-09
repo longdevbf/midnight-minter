@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
-import type { ChainWallet, Chain } from '../chain/types';
+import type { ChainWallet, Chain, WalletSnapshot } from '../chain/types';
 import { deriveKeys, newMnemonic } from '../chain/keys';
 import type { NetworkConfig } from '../config/networks';
 import type { Store } from '../db/store';
@@ -39,7 +39,29 @@ export interface EngineDeps {
    * Mặc định giữ nguyên.
    */
   redact?: (s: string) => string;
+  /**
+   * Khoảng tối thiểu giữa hai lần lưu snapshot của cùng một ví sau mỗi lần đồng bộ (R1). Mặc định 5 phút.
+   * Các lần lưu ép buộc (DUST xong, token done, trước khi đóng ví) không bị giới hạn.
+   */
+  snapshotMinIntervalMs?: number;
+  /** Tối đa chờ cho một lần chụp snapshot (ví có thể đang kẹt). Mặc định 30 giây; quá hạn thì bỏ qua. */
+  snapshotTimeoutMs?: number;
 }
+
+/**
+ * Phiên bản SDK ví tạo ra định dạng snapshot. Snapshot lưu bằng phiên bản khác bị bỏ qua và xoá
+ * (định dạng serializeState có thể đổi giữa các bản). Có test so với package.json đã cài.
+ */
+export const SDK_STATE_VERSION = '@midnightntwrk/wallet-sdk@1.2.0';
+const DEFAULT_SNAPSHOT_MIN_INTERVAL_MS = 5 * 60_000;
+const DEFAULT_SNAPSHOT_TIMEOUT_MS = 30_000;
+
+const isSnapshot = (v: unknown): v is WalletSnapshot =>
+  typeof v === 'object' &&
+  v !== null &&
+  typeof (v as Record<string, unknown>).shielded === 'string' &&
+  typeof (v as Record<string, unknown>).unshielded === 'string' &&
+  typeof (v as Record<string, unknown>).dust === 'string';
 
 type WalletStep = 'funding' | 'syncing' | 'dust_pending';
 const STEPS: WalletStep[] = ['funding', 'syncing', 'dust_pending'];
@@ -95,6 +117,10 @@ export class Engine {
   private readonly autoRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Ví có job hiện tại do hẹn giờ tự thử lại đưa vào (không phải người dùng/resume). */
   private readonly autoRuns = new Set<string>();
+  /** Ví (đúng lần mở này) đã đồng bộ xong ít nhất một lần trong tiến trình: chỉ những ví này mới được lưu snapshot. */
+  private readonly syncedWallets = new WeakSet<ChainWallet>();
+  /** Lần lưu snapshot thành công gần nhất theo id ví (điều tiết). */
+  private readonly lastSnapshotAt = new Map<string, number>();
 
   constructor(private readonly d: EngineDeps) {
     this.queue = new JobQueue((job) => this.run(job));
@@ -110,6 +136,7 @@ export class Engine {
     // Job vừa chạy xong có thể đã hẹn giờ lần tự thử lại mới. Ví giữ nguyên bước đang làm nên resume() chạy tiếp.
     this.clearAutoRetryTimers();
     for (const [id, w] of this.open) {
+      await this.saveSnapshot(id, w, true);
       await w.close().catch(() => undefined);
       this.open.delete(id);
     }
@@ -221,21 +248,90 @@ export class Engine {
       if (e instanceof ChainTimeoutError) {
         const stuck = this.open.get(walletId);
         this.open.delete(walletId);
-        if (stuck) await stuck.close().catch(() => undefined);
+        if (stuck) {
+          // Lưu trạng thái đã đồng bộ trước khi bỏ ví (có giới hạn thời gian: ví đang kẹt có thể không trả lời).
+          await this.saveSnapshot(walletId, stuck, true);
+          await stuck.close().catch(() => undefined);
+        }
       }
       throw e;
     }
   }
 
-  /** balances(true) có thể chờ đồng bộ mãi: bọc bằng syncTimeoutMs. */
-  private syncBalances(walletId: string, cw: ChainWallet) {
-    return this.guarded(walletId, 'Đồng bộ ví', cw.balances(true), { ms: this.d.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS });
+  /** balances(true) có thể chờ đồng bộ mãi: bọc bằng syncTimeoutMs. Đồng bộ xong thì lưu snapshot (có điều tiết). */
+  private async syncBalances(walletId: string, cw: ChainWallet) {
+    const b = await this.guarded(walletId, 'Đồng bộ ví', cw.balances(true), {
+      ms: this.d.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS,
+    });
+    this.syncedWallets.add(cw);
+    await this.saveSnapshot(walletId, cw, false);
+    return b;
+  }
+
+  /**
+   * Lưu snapshot (mã hóa bằng vault) của ví đã đồng bộ. Best effort: mọi lỗi bị nuốt, không bao giờ làm hỏng
+   * job và không ghi nội dung lỗi ra đâu. `force` = false thì tối đa một lần mỗi snapshotMinIntervalMs cho mỗi ví.
+   */
+  private async saveSnapshot(walletId: string, cw: ChainWallet, force: boolean): Promise<void> {
+    if (!this.syncedWallets.has(cw)) return;
+    if (!force) {
+      const last = this.lastSnapshotAt.get(walletId);
+      const min = this.d.snapshotMinIntervalMs ?? DEFAULT_SNAPSHOT_MIN_INTERVAL_MS;
+      if (last !== undefined && Date.now() - last < min) return;
+    }
+    try {
+      const snap = await withTimeout(
+        Promise.resolve().then(() => cw.snapshot()),
+        this.d.snapshotTimeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS,
+        'Lưu trạng thái ví',
+      );
+      this.d.store.setWalletState(walletId, {
+        network: this.d.network.name,
+        sdkVersion: SDK_STATE_VERSION,
+        blob: this.d.vault.encrypt(JSON.stringify(snap)),
+        savedAt: Date.now(),
+      });
+      this.lastSnapshotAt.set(walletId, Date.now());
+    } catch {
+      /* best effort: lần mở sau dùng snapshot cũ hơn hoặc đồng bộ lại từ đầu */
+    }
+  }
+
+  /**
+   * Snapshot đã lưu của ví nếu dùng được (đúng mạng, đúng phiên bản SDK, giải mã được, đúng hình dạng).
+   * Không dùng được thì xoá dòng và trả undefined (mở ví như cũ, đồng bộ lại từ đầu).
+   */
+  private loadSnapshot(walletId: string): WalletSnapshot | undefined {
+    try {
+      const row = this.d.store.getWalletState(walletId);
+      if (!row) return undefined;
+      if (row.network === this.d.network.name && row.sdkVersion === SDK_STATE_VERSION) {
+        const parsed: unknown = JSON.parse(this.d.vault.decrypt(row.blob));
+        if (isSnapshot(parsed)) return { shielded: parsed.shielded, unshielded: parsed.unshielded, dust: parsed.dust };
+      }
+    } catch {
+      /* hỏng / sai khóa: xoá bên dưới */
+    }
+    this.dropSnapshot(walletId);
+    return undefined;
+  }
+
+  private dropSnapshot(walletId: string) {
+    try {
+      this.d.store.deleteWalletState(walletId);
+    } catch {
+      /* best effort */
+    }
   }
 
   private async getOpen(w: WalletRecord): Promise<ChainWallet> {
     const cached = this.open.get(w.id);
     if (cached) return cached;
-    const pending = this.d.chain.open(this.d.network, this.d.vault.decrypt(w.encryptedMnemonic));
+    const mnemonic = this.d.vault.decrypt(w.encryptedMnemonic);
+    const snapshot = this.loadSnapshot(w.id);
+    const pending = snapshot
+      ? this.d.chain.open(this.d.network, mnemonic, snapshot)
+      : this.d.chain.open(this.d.network, mnemonic);
     let opened: ChainWallet;
     try {
       opened = await withTimeout(pending, this.d.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS, 'Mở ví');
@@ -244,6 +340,8 @@ export class Engine {
       if (e instanceof ChainTimeoutError) pending.then((late) => late.close()).catch(() => undefined);
       throw e;
     }
+    // Chain không dùng được snapshot (đã tự đồng bộ lại từ đầu): snapshot đó vô dụng, xoá.
+    if (snapshot && !opened.restored) this.dropSnapshot(w.id);
     this.open.set(w.id, opened);
     await this.trim();
     return opened;
@@ -256,6 +354,7 @@ export class Engine {
       if (!victim) return;
       const w = this.open.get(victim) as ChainWallet;
       this.open.delete(victim);
+      await this.saveSnapshot(victim, w, true);
       await w.close().catch(() => undefined);
     }
   }
@@ -306,6 +405,9 @@ export class Engine {
       return 'ok';
     }
     await this.guarded(w.id, 'Đăng ký DUST', cw.ensureDust(), { ms: this.d.dustTimeoutMs ?? DEFAULT_DUST_TIMEOUT_MS });
+    // ensureDust chỉ xong khi ví đã đồng bộ: lưu ngay (ép buộc) trạng thái đã có đăng ký DUST.
+    this.syncedWallets.add(cw);
+    await this.saveSnapshot(w.id, cw, true);
     this.saveBalances(w.id, await this.syncBalances(w.id, cw));
     return 'ok';
   }
@@ -509,6 +611,7 @@ export class Engine {
       } catch {
         /* token đã done; số dư sẽ được cập nhật ở lần làm mới sau, không được ghi đè trạng thái */
       }
+      await this.saveSnapshot(w.id, cw, true); // không bao giờ ném
     } catch (e) {
       this.patchToken(id, { status: 'failed', failedStep: step, message: this.errMsg(e) });
     }
