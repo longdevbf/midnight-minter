@@ -23,6 +23,18 @@ export interface AppContext {
   webDir: string | null;
 }
 
+const ALLOWED_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** Hostname (chữ thường, không cổng; IPv6 giữ ngoặc vuông) của một URL tuyệt đối; null nếu không phân tích được. */
+function hostnameOf(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 const fail = (reply: FastifyReply, status: number, error: string) => reply.status(status).send({ error });
 
 const MintPayload = z.object({
@@ -63,7 +75,17 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     return fail(reply, status, err instanceof Error ? err.message : String(err));
   });
 
-  app.addHook('preHandler', async (req, reply) => {
+  // Chống DNS rebinding / CSRF: chỉ nhận Host loopback; request ghi (không phải GET/HEAD/OPTIONS) mang Origin lạ bị từ chối.
+  app.addHook('onRequest', async (req, reply) => {
+    const host = hostnameOf(`http://${req.headers.host ?? ''}`);
+    if (!host || !ALLOWED_HOSTNAMES.has(host)) return fail(reply, 403, 'Yêu cầu bị từ chối (Host không hợp lệ)');
+    if (!SAFE_METHODS.has(req.method)) {
+      const origin = req.headers.origin;
+      if (origin !== undefined) {
+        const originHost = hostnameOf(Array.isArray(origin) ? origin[0] : origin);
+        if (!originHost || !ALLOWED_HOSTNAMES.has(originHost)) return fail(reply, 403, 'Yêu cầu bị từ chối (Origin không hợp lệ)');
+      }
+    }
     const path = req.url.split('?')[0];
     if (!path.startsWith('/api/')) return;
     if (path === '/api/status' || path === '/api/unlock') return;
@@ -127,15 +149,15 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   app.post('/api/wallets/:id/retry', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!ctx.store.getWallet(id)) return fail(reply, 404, 'Không tìm thấy ví');
-    engine().retryWallet(id);
-    return reply.status(202).send({ ok: true });
+    const queued = engine().retryWallet(id);
+    return reply.status(202).send({ ok: true, queued });
   });
 
   app.post('/api/wallets/:id/refresh', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!ctx.store.getWallet(id)) return fail(reply, 404, 'Không tìm thấy ví');
-    engine().refreshWallet(id);
-    return reply.status(202).send({ ok: true });
+    const queued = engine().refreshWallet(id);
+    return reply.status(202).send({ ok: true, queued });
   });
 
   app.post('/api/wallets/:id/seed', async (req, reply) => {
@@ -147,11 +169,25 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     return { mnemonic: vault().decrypt(w.encryptedMnemonic) };
   });
 
+  // Xuất toàn bộ seedphrase: chỉ sau khi xác minh lại mật khẩu chủ; không bao giờ ghi log, không cho cache.
+  app.post('/api/export', async (req, reply) => {
+    const { password } = (req.body ?? {}) as { password?: unknown };
+    if (typeof password !== 'string' || !ctx.session.verifyPassword(password)) return fail(reply, 401, 'Sai mật khẩu chủ');
+    const rows = ctx.store.listWallets().map((w) => ({
+      label: w.label,
+      kind: w.kind,
+      network: w.network,
+      unshieldedAddress: w.unshieldedAddress,
+      mnemonic: vault().decrypt(w.encryptedMnemonic),
+    }));
+    return reply.header('cache-control', 'no-store').send(rows);
+  });
+
   app.post('/api/tokens/:id/retry', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!ctx.store.getToken(id)) return fail(reply, 404, 'Không tìm thấy token');
-    engine().enqueueToken(id);
-    return reply.status(202).send({ ok: true });
+    const queued = engine().enqueueToken(id);
+    return reply.status(202).send({ ok: true, queued });
   });
 
   app.post('/api/mint', async (req, reply) => {

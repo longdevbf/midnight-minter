@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { PublicToken, PublicWallet } from '../../../server/src/types';
 import { DUST_DECIMALS, NIGHT_DECIMALS, formatUnits } from '../../../shared/units';
 import { api } from '../api';
+import { queuedInfo, type QueuedResult } from '../lib/queued';
 import { CopyButton } from './CopyButton';
 import { StatusBadge } from './StatusBadge';
 import { TokenCard } from './TokenCard';
@@ -16,9 +17,10 @@ interface Props {
   faucetUrl: string;
   onChanged: () => void;
   onError: (m: string) => void;
+  onInfo?: (m: string) => void;
 }
 
-export function WalletDetail({ data, loading = false, loadError = null, onReload, faucetUrl, onChanged, onError }: Props) {
+export function WalletDetail({ data, loading = false, loadError = null, onReload, faucetUrl, onChanged, onError, onInfo }: Props) {
   const [seed, setSeed] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const [password, setPassword] = useState('');
@@ -53,8 +55,12 @@ export function WalletDetail({ data, loading = false, loadError = null, onReload
     }
   }
 
-  async function act(run: () => Promise<unknown>) {
-    try { await run(); onChanged(); } catch (e) { fail(e); }
+  async function act(run: () => Promise<QueuedResult>) {
+    try {
+      const info = queuedInfo(await run());
+      if (info) onInfo?.(info);
+      onChanged();
+    } catch (e) { fail(e); }
   }
 
   return (
@@ -105,7 +111,7 @@ export function WalletDetail({ data, loading = false, loadError = null, onReload
         <h2 id="tokens-title" className="section-title">Token của ví này <span className="muted">({tokens.length})</span></h2>
         {tokens.length === 0
           ? <div className="card empty-state"><p className="muted">Ví chưa có token nào. Qua tab "Mint token" để tạo.</p></div>
-          : <div className="stack">{tokens.map((t) => <TokenCard key={t.id} token={t} onChanged={onChanged} onError={onError} />)}</div>}
+          : <div className="stack">{tokens.map((t) => <TokenCard key={t.id} token={t} onChanged={onChanged} onError={onError} onInfo={onInfo} />)}</div>}
       </section>
     </div>
   );

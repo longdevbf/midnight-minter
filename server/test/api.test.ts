@@ -8,6 +8,7 @@ import { openStore, type Store } from '../src/db/store';
 import { createSession } from '../src/session';
 import { getNetworkConfig } from '../src/config/networks';
 import type { Ipfs } from '../src/ipfs/pinata';
+import { deriveKeys } from '../src/chain/keys';
 import { makeFakeChain } from './fake-chain';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
@@ -101,6 +102,14 @@ describe('API', () => {
     expect(bad.json().error).toMatch(/Sai mật khẩu/);
     expect(bad.body).not.toContain('sai-mat-khau-1');
     await app2.close();
+  });
+
+  it('mở khóa lại khi đã mở khóa vẫn phải đúng mật khẩu (F10)', async () => {
+    expect((await unlock()).statusCode).toBe(200);
+    const bad = await app.inject({ method: 'POST', url: '/api/unlock', payload: { password: 'sai-mat-khau-1' } });
+    expect(bad.statusCode).toBe(401);
+    expect(bad.json().error).toBe('Sai mật khẩu chủ');
+    expect((await unlock()).statusCode).toBe(200);
   });
 
   it('mật khẩu quá ngắn bị từ chối', async () => {
@@ -411,5 +420,106 @@ describe('API', () => {
     expect((await app.inject({ method: 'POST', url: `/api/wallets/${w1.id}/refresh` })).statusCode).toBe(202);
     expect((await app.inject({ method: 'POST', url: '/api/tokens/khong-co/retry' })).statusCode).toBe(404);
     await engine.idle();
+  });
+
+  describe('Host/Origin allowlist (F5)', () => {
+    it('Host lạ bị 403 trên /api/status, /api/wallets, /api/events', async () => {
+      for (const url of ['/api/status', '/api/wallets', '/api/events']) {
+        const r = await app.inject({ url, headers: { host: 'evil.example' } });
+        expect(r.statusCode).toBe(403);
+        expect(r.json().error).toBe('Yêu cầu bị từ chối (Host không hợp lệ)');
+      }
+    });
+
+    it('Host hợp lệ (localhost, 127.0.0.1, [::1], hoa thường, có cổng) được chấp nhận', async () => {
+      for (const host of ['localhost', 'LocalHost:8787', '127.0.0.1:8787', '[::1]:8787', '[::1]']) {
+        const r = await app.inject({ url: '/api/status', headers: { host } });
+        expect(r.statusCode, host).toBe(200);
+      }
+    });
+
+    it('Host giả mạo kiểu localhost.evil.example hoặc có userinfo bị từ chối', async () => {
+      for (const host of ['localhost.evil.example', 'evil.example:8787', '127.0.0.1.evil.example']) {
+        expect((await app.inject({ url: '/api/status', headers: { host } })).statusCode, host).toBe(403);
+      }
+    });
+
+    it('POST với Origin lạ bị 403 (/api/wallets và /api/mint); Origin không hợp lệ cũng bị từ chối', async () => {
+      await unlock();
+      for (const url of ['/api/wallets', '/api/mint']) {
+        const r = await app.inject({ method: 'POST', url, payload: { count: 1 }, headers: { origin: 'https://evil.example' } });
+        expect(r.statusCode, url).toBe(403);
+        expect(r.json().error).toBe('Yêu cầu bị từ chối (Origin không hợp lệ)');
+      }
+      const bad = await app.inject({ method: 'POST', url: '/api/wallets', payload: { count: 1 }, headers: { origin: 'khong phai url' } });
+      expect(bad.statusCode).toBe(403);
+      expect(store.listWallets()).toHaveLength(0);
+    });
+
+    it('Origin localhost:5173 được phép; không có Origin cũng được; GET với Origin lạ không bị chặn bởi Origin', async () => {
+      await unlock();
+      const ok = await app.inject({ method: 'POST', url: '/api/wallets', payload: { count: 1 }, headers: { origin: 'http://localhost:5173' } });
+      expect(ok.statusCode).toBe(201);
+      await engine.idle();
+      const noOrigin = await app.inject({ method: 'POST', url: '/api/wallets', payload: { count: 1 } });
+      expect(noOrigin.statusCode).toBe(201);
+      await engine.idle();
+      expect((await app.inject({ url: '/api/wallets', headers: { origin: 'https://evil.example' } })).statusCode).toBe(200);
+    });
+
+    it('Host lạ bị chặn trước cả cổng xác thực (không lộ 401)', async () => {
+      const r = await app.inject({ url: '/api/wallets', headers: { host: 'evil.example' } });
+      expect(r.statusCode).toBe(403);
+    });
+  });
+
+  describe('xuất toàn bộ seedphrase (F9.1)', () => {
+    const exportReq = (payload: unknown) => app.inject({ method: 'POST', url: '/api/export', payload: payload as object });
+
+    it('phiên khóa: 401 yêu cầu mở khóa', async () => {
+      const r = await exportReq({ password: PASSWORD });
+      expect(r.statusCode).toBe(401);
+      expect(r.json().error).toMatch(/mở khóa/);
+    });
+
+    it('sai hoặc thiếu mật khẩu: 401 Sai mật khẩu chủ, không lộ mnemonic', async () => {
+      await unlock();
+      await engine.createWallets(1, 'child');
+      await engine.idle();
+      for (const payload of [{ password: 'sai-mat-khau-1' }, {}, { password: 123 }]) {
+        const r = await exportReq(payload);
+        expect(r.statusCode).toBe(401);
+        expect(r.json().error).toBe('Sai mật khẩu chủ');
+        expect(r.body).not.toMatch(/mnemonic/);
+      }
+    });
+
+    it('đúng mật khẩu: trả mọi ví theo thứ tự tạo, mnemonic 24 từ khớp địa chỉ, no-store', async () => {
+      await unlock();
+      await engine.createWallets(1, 'treasury');
+      await engine.createWallets(2, 'child');
+      await engine.idle();
+      const r = await exportReq({ password: PASSWORD });
+      expect(r.statusCode).toBe(200);
+      expect(r.headers['cache-control']).toBe('no-store');
+      const rows = r.json() as Array<{ label: string; kind: string; network: string; unshieldedAddress: string; mnemonic: string }>;
+      const expected = store.listWallets();
+      expect(rows).toHaveLength(3);
+      expect(rows.map((x) => x.label)).toEqual(expected.map((w) => w.label));
+      expect(rows.map((x) => x.kind)).toEqual(['treasury', 'child', 'child']);
+      for (const row of rows) {
+        expect(row.network).toBe('preview');
+        expect(row.mnemonic.split(' ')).toHaveLength(24);
+        expect((await deriveKeys(row.mnemonic, network.networkId)).unshieldedAddress).toBe(row.unshieldedAddress);
+      }
+      expect(Object.keys(rows[0]).sort()).toEqual(['kind', 'label', 'mnemonic', 'network', 'unshieldedAddress']);
+    });
+
+    it('Origin lạ bị chặn bởi allowlist ngay cả với đúng mật khẩu', async () => {
+      await unlock();
+      const r = await app.inject({ method: 'POST', url: '/api/export', payload: { password: PASSWORD }, headers: { origin: 'https://evil.example' } });
+      expect(r.statusCode).toBe(403);
+      expect(r.body).not.toMatch(/mnemonic/);
+    });
   });
 });
