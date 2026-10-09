@@ -1,5 +1,9 @@
+import Database from 'better-sqlite3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { openStore, type Store } from '../src/db/store';
+import { openStore, type Store, type WalletStateRecord } from '../src/db/store';
 import { toPublicToken, toPublicWallet, type TokenRecord, type WalletRecord } from '../src/types';
 
 const wallet = (over: Partial<WalletRecord> = {}): WalletRecord => ({
@@ -104,5 +108,81 @@ describe('store', () => {
     expect(pw).not.toHaveProperty('encryptedMnemonic');
     expect(pw.tokenCount).toBe(3);
     expect(toPublicToken(token())).not.toHaveProperty('encryptedOwnerSecret');
+  });
+});
+
+describe('store — trạng thái ví đã đồng bộ (wallet_state, R1)', () => {
+  let store: Store;
+  beforeEach(() => { store = openStore(':memory:'); });
+  afterEach(() => { store.close(); });
+
+  const state = (over: Partial<WalletStateRecord> = {}): WalletStateRecord => ({
+    network: 'preview', sdkVersion: '@midnightntwrk/wallet-sdk@1.2.0', blob: 'v1:a:b:c', savedAt: 1000, ...over,
+  });
+
+  it('chưa lưu thì trả null; lưu rồi đọc lại đúng các trường (camelCase)', () => {
+    store.insertWallet(wallet());
+    expect(store.getWalletState('w1')).toBeNull();
+    store.setWalletState('w1', state());
+    expect(store.getWalletState('w1')).toEqual(state());
+  });
+
+  it('lưu lần hai ghi đè (upsert), không tạo dòng mới', () => {
+    store.insertWallet(wallet());
+    store.setWalletState('w1', state());
+    store.setWalletState('w1', state({ blob: 'v1:d:e:f', savedAt: 2000, network: 'preprod' }));
+    expect(store.getWalletState('w1')).toEqual(state({ blob: 'v1:d:e:f', savedAt: 2000, network: 'preprod' }));
+  });
+
+  it('xoá: chỉ xoá đúng ví đó; xoá ví chưa có trạng thái thì không lỗi', () => {
+    store.insertWallet(wallet({ id: 'a', unshieldedAddress: 'a1' }));
+    store.insertWallet(wallet({ id: 'b', unshieldedAddress: 'a2' }));
+    store.setWalletState('a', state());
+    store.setWalletState('b', state({ blob: 'v1:b:b:b' }));
+    store.deleteWalletState('a');
+    expect(store.getWalletState('a')).toBeNull();
+    expect(store.getWalletState('b')?.blob).toBe('v1:b:b:b');
+    expect(() => store.deleteWalletState('a')).not.toThrow();
+    expect(() => store.deleteWalletState('zzz')).not.toThrow();
+  });
+
+  it('khóa ngoại: không lưu được trạng thái cho ví không tồn tại', () => {
+    expect(() => store.setWalletState('zzz', state())).toThrow(/FOREIGN KEY/);
+    expect(store.getWalletState('zzz')).toBeNull();
+  });
+
+  it('từ chối trường lạ (danh sách trắng) và không ghi gì', () => {
+    store.insertWallet(wallet());
+    expect(() => store.setWalletState('w1', { ...state(), evil: 'x' } as never)).toThrow(/không hợp lệ/);
+    expect(() => store.setWalletState('w1', { network: 'preview' } as never)).toThrow(/thiếu/i);
+    expect(store.getWalletState('w1')).toBeNull();
+  });
+
+  it('CSDL cũ (chưa có bảng wallet_state) được nâng cấp tự động khi mở', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'minter-store-'));
+    const path = join(dir, 'old.db');
+    try {
+      const old = new Database(path);
+      old.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE wallets (
+          id TEXT PRIMARY KEY, label TEXT NOT NULL, kind TEXT NOT NULL, network TEXT NOT NULL,
+          unshielded_address TEXT NOT NULL UNIQUE, encrypted_mnemonic TEXT NOT NULL,
+          status TEXT NOT NULL, failed_step TEXT, message TEXT,
+          night_balance TEXT NOT NULL DEFAULT '0', dust_balance TEXT NOT NULL DEFAULT '0',
+          created_at INTEGER NOT NULL);
+        INSERT INTO wallets (id, label, kind, network, unshielded_address, encrypted_mnemonic, status, created_at)
+          VALUES ('w1', 'Ví 1', 'child', 'preview', 'addr1', 'v1:a:b:c', 'ready', 1);`);
+      old.close();
+      const s = openStore(path);
+      try {
+        expect(s.getWallet('w1')?.status).toBe('ready');
+        s.setWalletState('w1', state());
+        expect(s.getWalletState('w1')).toEqual(state());
+      } finally {
+        s.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
