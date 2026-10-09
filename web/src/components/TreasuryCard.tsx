@@ -56,16 +56,17 @@ export function TreasuryCard({ treasury, faucetUrl, fundAmount, onChanged, onSel
         <dt>NIGHT</dt><dd className="num">{formatUnits(treasury.nightBalance, NIGHT_DECIMALS)}</dd>
         <dt>DUST</dt><dd className="num">{formatUnits(treasury.dustBalance, DUST_DECIMALS)}</dd>
       </dl>
-      {waiting && (
-        <div className="hint">
-          <p>Xin tNIGHT cho địa chỉ này (cần giải captcha):</p>
-          <div className="row">
-            <CopyButton value={treasury.unshieldedAddress} label="địa chỉ ví tổng" onError={onError} />
-            <a className="btn" href={faucetUrl} target="_blank" rel="noreferrer">Mở faucet</a>
-          </div>
-          <p className="muted small">App tự phát hiện khi tiền về.</p>
+      {/* Luôn hiện (không chỉ khi đang chờ) để nạp thêm tNIGHT khi ví tổng sắp cạn. */}
+      <div className={waiting ? 'hint' : undefined}>
+        <p className={waiting ? undefined : 'muted small'}>
+          {waiting ? 'Xin tNIGHT cho địa chỉ này (cần giải captcha):' : 'Nạp thêm tNIGHT cho ví tổng (cần giải captcha):'}
+        </p>
+        <div className="row">
+          <CopyButton value={treasury.unshieldedAddress} label="địa chỉ ví tổng" onError={onError} />
+          <a className="btn" href={faucetUrl} target="_blank" rel="noreferrer">Mở faucet</a>
         </div>
-      )}
+        {waiting && <p className="muted small">App tự phát hiện khi tiền về.</p>}
+      </div>
       {treasury.status === 'failed' && (
         <div className="hint bad">
           <p>{treasury.message}</p>
