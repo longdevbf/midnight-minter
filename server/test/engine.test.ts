@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Engine } from '../src/engine/engine';
 import { openStore, type Store } from '../src/db/store';
 import { createVault, makeSalt } from '../src/lib/vault';
@@ -10,7 +10,7 @@ import type { TokenRecord } from '../src/types';
 const FUND = 100_000_000n;
 const network = getNetworkConfig('preview', {});
 
-function setup(opts: { chainCallTimeoutMs?: number } = {}) {
+function setup(opts: { chainCallTimeoutMs?: number; syncTimeoutMs?: number } = {}) {
   const store = openStore(':memory:');
   const vault = createVault('mat-khau-chu-123', makeSalt());
   const fake = makeFakeChain();
@@ -18,7 +18,7 @@ function setup(opts: { chainCallTimeoutMs?: number } = {}) {
   const events: Array<{ kind: string; id: string }> = [];
   bus.on('change', (e) => events.push(e));
   const engine = new Engine({ store, vault, chain: fake.chain, network, bus, fundAmount: FUND, waitFundMs: 10, ...opts });
-  return { store, vault, fake, engine, events };
+  return { store, vault, fake, engine, events, bus };
 }
 
 const mnemonicOf = (ctx: ReturnType<typeof setup>, id: string) =>
@@ -356,5 +356,206 @@ describe('Engine — quá thời gian chờ chuỗi', () => {
       expect(ctx.store.getToken('tok1')!.status).toBe('done');
       expect(ctx.fake.state.calls.filter((c) => c.startsWith('deploy:')).length).toBe(deploys);
     });
+  });
+});
+
+// ------------------------------------------------------------------ vòng sửa 1
+
+const fundingKey = (id: string) => `funding_sent:${id}`;
+const transferCount = (ctx: ReturnType<typeof setup>) => ctx.fake.state.calls.filter((c) => c.startsWith('transfer:')).length;
+
+function insertTok(ctx: ReturnType<typeof setup>, walletId: string, over: Partial<TokenRecord> = {}) {
+  ctx.store.insertToken({
+    id: 'tok1', walletId, name: 'Papa', symbol: 'PAPA', decimals: 6, amountWhole: '10', baseUnits: '10000000',
+    imageUri: 'ipfs://cid', imageGatewayUrl: 'https://gw/ipfs/cid', imageSha256: 'ab'.repeat(32),
+    encryptedOwnerSecret: ctx.vault.encrypt('cd'.repeat(32)),
+    contractAddress: null, tokenColor: null, deployTxId: null, mintTxId: null,
+    status: 'queued', failedStep: null, message: null, createdAt: Date.now(), ...over,
+  });
+}
+
+describe('Engine — hai lần bấm tạo ví tổng', () => {
+  it('chỉ một ví tổng được tạo khi gọi đồng thời', async () => {
+    const ctx = setup();
+    const results = await Promise.allSettled([
+      ctx.engine.createWallets(1, 'treasury'),
+      ctx.engine.createWallets(1, 'treasury'),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0].reason.message)).toMatch(/Đã có ví tổng/);
+    expect(ctx.store.listWallets().filter((w) => w.kind === 'treasury')).toHaveLength(1);
+    await ctx.engine.idle();
+  });
+});
+
+describe('Engine — không chuyển tNIGHT hai lần', () => {
+  it('(a) giao dịch đã gửi nhưng chưa tới: retry chỉ chờ, không chuyển lại; tới rồi thì ready và xoá dấu', async () => {
+    const ctx = setup();
+    await readyTreasury(ctx);
+    ctx.fake.state.holdCredit = true;
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const failed = ctx.store.getWallet(c.id)!;
+    expect(failed.status).toBe('failed');
+    expect(failed.failedStep).toBe('funding');
+    expect(failed.message).toMatch(/không chuyển lại/);
+    expect(transferCount(ctx)).toBe(1);
+    expect(ctx.store.getMeta(fundingKey(c.id))).toBeTruthy();
+
+    ctx.engine.retryWallet(c.id);
+    await ctx.engine.idle();
+    const waiting = ctx.store.getWallet(c.id)!;
+    expect(waiting.status).toBe('funding');
+    expect(waiting.failedStep).toBeNull();
+    expect(waiting.message).toMatch(/chưa được xác nhận/);
+    expect(transferCount(ctx)).toBe(1);
+
+    ctx.fake.releaseCredits();
+    ctx.engine.pollWaiting();
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+    expect(transferCount(ctx)).toBe(1);
+    expect(ctx.store.getMeta(fundingKey(c.id))).toBe('');
+  });
+
+  it('(b) dấu cũ nhưng ví tổng chưa bị trừ (giao dịch chưa từng tới chuỗi): chuyển đúng một lần', async () => {
+    const ctx = setup();
+    const tid = await readyTreasury(ctx);
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+    // Giả lập app sập giữa lúc gửi: ví con về 0, dấu ghi số dư ví tổng HIỆN TẠI (chưa bị trừ thêm).
+    ctx.fake.state.calls.length = 0;
+    ctx.fake.state.night.set(mnemonicOf(ctx, c.id), 0n);
+    ctx.store.updateWallet(c.id, { status: 'failed', failedStep: 'funding', message: 'x' });
+    const treasuryNight = ctx.fake.state.night.get(mnemonicOf(ctx, tid))!;
+    ctx.store.setMeta(fundingKey(c.id), JSON.stringify({ treasuryBefore: treasuryNight.toString(), at: Date.now() }));
+    ctx.engine.retryWallet(c.id);
+    await ctx.engine.idle();
+    expect(transferCount(ctx)).toBe(1);
+    expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+    expect(ctx.store.getMeta(fundingKey(c.id))).toBe('');
+  });
+
+  it('(c) transferNight treo sau khi ví tổng đã bị trừ: retry không chuyển lại', async () => {
+    const ctx = setup({ chainCallTimeoutMs: 30 });
+    await readyTreasury(ctx);
+    ctx.fake.state.hang.add('transferAfter');
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const failed = ctx.store.getWallet(c.id)!;
+    expect(failed.status).toBe('failed');
+    expect(failed.failedStep).toBe('funding');
+    expect(failed.message).toMatch(/quá thời gian chờ/);
+    ctx.fake.state.hang.delete('transferAfter');
+    ctx.engine.retryWallet(c.id);
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+    expect(transferCount(ctx)).toBe(1);
+  });
+});
+
+describe('Engine — đồng bộ ví quá thời gian', () => {
+  it('balances(true) treo ở bước syncing: failed(syncing) quá thời gian, thử lại thành công', async () => {
+    const ctx = setup({ syncTimeoutMs: 30 });
+    await readyTreasury(ctx);
+    let armed = true;
+    ctx.bus.on('change', () => {
+      const child = ctx.store.listWallets().find((w) => w.kind === 'child');
+      if (armed && child?.status === 'syncing') {
+        armed = false;
+        ctx.fake.state.hang.add('balances');
+      }
+    });
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const failed = ctx.store.getWallet(c.id)!;
+    expect(failed.status).toBe('failed');
+    expect(failed.failedStep).toBe('syncing');
+    expect(failed.message).toMatch(/quá thời gian chờ/);
+    expect(failed.message).not.toMatch(/NaN/);
+    ctx.fake.state.hang.delete('balances');
+    ctx.engine.retryWallet(c.id);
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+  });
+
+  it('timeout vô hạn/rất lớn bị kẹp về giới hạn setTimeout (không bắn sau 1 ms)', async () => {
+    const ctx = setup({ chainCallTimeoutMs: Infinity, syncTimeoutMs: Number.MAX_SAFE_INTEGER });
+    const real = globalThis.setTimeout;
+    const delays: unknown[] = [];
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...a: unknown[]) => {
+      delays.push(ms);
+      return real(fn, ms, ...a);
+    }) as typeof setTimeout);
+    try {
+      await readyTreasury(ctx);
+      const [c] = await ctx.engine.createWallets(1, 'child');
+      await ctx.engine.idle();
+      expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+    } finally {
+      spy.mockRestore();
+    }
+    const big = delays.filter((d) => typeof d === 'number' && d > 1_000_000);
+    expect(big.length).toBeGreaterThan(0); // có timer dài thật sự được đặt
+    expect(delays.every((d) => d === undefined || (typeof d === 'number' && d <= 2_147_483_647))).toBe(true);
+  });
+});
+
+describe('Engine — token: sửa lỗi nhỏ', () => {
+  let ctx: ReturnType<typeof setup>;
+  let walletId: string;
+  beforeEach(async () => {
+    ctx = setup();
+    await readyTreasury(ctx);
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+    walletId = c.id;
+  });
+
+  it('đọc số dư cuối lỗi không làm token đã done thành failed', async () => {
+    insertTok(ctx, walletId);
+    ctx.fake.state.failOnce.add('balancesFinal');
+    ctx.engine.enqueueToken('tok1');
+    await ctx.engine.idle();
+    expect(ctx.fake.state.failOnce.has('balancesFinal')).toBe(false); // lần đọc cuối đã thực sự ném lỗi
+    expect(ctx.store.getToken('tok1')!.status).toBe('done');
+  });
+
+  it('hết DUST khi đã có contract: failedStep là minting', async () => {
+    insertTok(ctx, walletId, { contractAddress: 'contract-x'.padEnd(64, '0'), deployTxId: 'tx', status: 'failed', failedStep: 'minting' });
+    ctx.fake.state.dust.set(mnemonicOf(ctx, walletId), 0n);
+    ctx.engine.enqueueToken('tok1');
+    await ctx.engine.idle();
+    const t = ctx.store.getToken('tok1')!;
+    expect(t.status).toBe('failed');
+    expect(t.failedStep).toBe('minting');
+    expect(t.message).toMatch(/DUST/);
+  });
+
+  it('ví chưa sẵn sàng: đã có contract thì failedStep minting, chưa có thì deploying', async () => {
+    ctx.store.updateWallet(walletId, { status: 'funding' });
+    insertTok(ctx, walletId, { id: 'a', contractAddress: 'contract-x'.padEnd(64, '0') });
+    insertTok(ctx, walletId, { id: 'b' });
+    ctx.engine.enqueueToken('a');
+    ctx.engine.enqueueToken('b');
+    await ctx.engine.idle();
+    expect(ctx.store.getToken('a')!.failedStep).toBe('minting');
+    expect(ctx.store.getToken('b')!.failedStep).toBe('deploying');
+  });
+
+  it('thông báo timeout của deploy nhắc kiểm tra ví trước khi thử lại', async () => {
+    const c2 = setup({ chainCallTimeoutMs: 30 });
+    await readyTreasury(c2);
+    const [w] = await c2.engine.createWallets(1, 'child');
+    await c2.engine.idle();
+    insertTok(c2, w.id);
+    c2.fake.state.hang.add('deploy');
+    c2.engine.enqueueToken('tok1');
+    await c2.engine.idle();
+    expect(c2.store.getToken('tok1')!.message).toMatch(/Kiểm tra ví trước khi bấm Thử lại/);
   });
 });

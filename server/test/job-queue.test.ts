@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { JobQueue } from '../src/engine/job-queue';
 
 describe('JobQueue', () => {
@@ -37,6 +37,7 @@ describe('JobQueue', () => {
   });
 
   it('một job lỗi không làm dừng hàng đợi', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const done: string[] = [];
     const q = new JobQueue(async (j) => {
       if (j.id === 'bad') throw new Error('boom');
@@ -45,6 +46,11 @@ describe('JobQueue', () => {
     q.enqueue({ type: 'token', id: 'bad' });
     q.enqueue({ type: 'token', id: 'good' });
     await q.idle();
-    expect(done).toEqual(['good']);
+    try {
+      expect(done).toEqual(['good']);
+      expect(errSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

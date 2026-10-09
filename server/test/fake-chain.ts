@@ -10,8 +10,11 @@ export interface FakeState {
   contracts: Map<string, { minted: boolean; amount: bigint; color: string }>;
   calls: string[];
   failOnce: Set<string>;
-  /** tên thao tác ("ensureDust" | "transfer" | "deploy" | "mint") sẽ treo mãi, như khi chờ finalization không bao giờ tới */
+  /** tên thao tác ("ensureDust" | "transfer" | "transferAfter" (treo sau khi đã trừ tiền) | "deploy" | "mint" | "balances" (chỉ khi sync=true)) sẽ treo mãi, như khi chờ finalization không bao giờ tới */
   hang: Set<string>;
+  /** true: transferNight trừ tiền người gửi ngay nhưng hoãn cộng cho người nhận tới khi gọi releaseCredits() */
+  holdCredit: boolean;
+  pendingCredits: Array<{ to: string; amount: bigint }>;
   opened: number;
   closed: number;
   balanceCalls: number;
@@ -23,7 +26,7 @@ export interface FakeState {
  */
 export function makeFakeChain() {
   const state: FakeState = {
-    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), hang: new Set(),
+    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), hang: new Set(), holdCredit: false, pendingCredits: [],
     opened: 0, closed: 0, balanceCalls: 0,
   };
   const addrToMnemonic = new Map<string, string>();
@@ -45,8 +48,10 @@ export function makeFakeChain() {
       state.opened++;
       addrToMnemonic.set((await deriveKeys(mnemonic, network.networkId)).unshieldedAddress, mnemonic);
       const w: ChainWallet = {
-        async balances() {
+        async balances(sync: boolean) {
           state.balanceCalls++;
+          if (sync) await maybeHang('balances');
+          else maybeFail('balancesFinal');
           return { night: state.night.get(mnemonic) ?? 0n, dust: state.dust.get(mnemonic) ?? 0n, synced: true };
         },
         async waitNight(min) {
@@ -64,7 +69,11 @@ export function makeFakeChain() {
           maybeFail('transfer');
           state.night.set(mnemonic, (state.night.get(mnemonic) ?? 0n) - amount);
           const target = addrToMnemonic.get(to);
-          if (target) state.night.set(target, (state.night.get(target) ?? 0n) + amount);
+          if (target) {
+            if (state.holdCredit) state.pendingCredits.push({ to: target, amount });
+            else state.night.set(target, (state.night.get(target) ?? 0n) + amount);
+          }
+          await maybeHang('transferAfter');
           return 'tx-transfer';
         },
         async deployToken(a: DeployArgs) {
@@ -94,5 +103,9 @@ export function makeFakeChain() {
       return w;
     },
   };
-  return { chain, state };
+  /** Áp dụng các khoản cộng tiền đang bị hoãn (holdCredit). */
+  const releaseCredits = () => {
+    for (const c of state.pendingCredits.splice(0)) state.night.set(c.to, (state.night.get(c.to) ?? 0n) + c.amount);
+  };
+  return { chain, state, releaseCredits };
 }

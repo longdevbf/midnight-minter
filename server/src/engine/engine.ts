@@ -19,6 +19,8 @@ export interface EngineDeps {
   waitFundMs?: number;
   /** Tối đa chờ cho mỗi lệnh gọi chuỗi có thể treo mãi (finalization, findDeployedContract). Mặc định 30 phút. */
   chainCallTimeoutMs?: number;
+  /** Tối đa chờ khi mở ví và đồng bộ số dư (balances(true)). Mặc định 60 phút. */
+  syncTimeoutMs?: number;
 }
 
 type WalletStep = 'funding' | 'syncing' | 'dust_pending';
@@ -26,9 +28,16 @@ const STEPS: WalletStep[] = ['funding', 'syncing', 'dust_pending'];
 const MAX_OPEN = 3;
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** Dấu bền vững trong bảng meta: đã gửi lệnh chuyển tNIGHT cho ví con này. */
+const fundingKey = (walletId: string) => `funding_sent:${walletId}`;
 const night = (v: bigint) => `${formatUnits(v, NIGHT_DECIMALS)} tNIGHT`;
 
 const DEFAULT_CHAIN_CALL_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_SYNC_TIMEOUT_MS = 60 * 60_000;
+/** Giới hạn của setTimeout: lớn hơn thì Node bắn sau 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+const DEFAULT_TIMEOUT_HINT = 'Bấm Thử lại để tiếp tục.';
+const DEPLOY_TIMEOUT_HINT = 'Kiểm tra ví trước khi bấm Thử lại vì giao dịch có thể vẫn được xác nhận.';
 
 class ChainTimeoutError extends Error {}
 
@@ -39,11 +48,12 @@ function formatDuration(ms: number): string {
 }
 
 /** Từ chối khi `promise` không xong sau `ms`; luôn dọn timer khi promise đã settle. */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, rawMs: number, label: string, hint = DEFAULT_TIMEOUT_HINT): Promise<T> {
+  const ms = Number.isNaN(rawMs) ? MAX_TIMER_MS : Math.min(Math.max(rawMs, 0), MAX_TIMER_MS);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new ChainTimeoutError(`${label} quá thời gian chờ (${formatDuration(ms)}). Bấm Thử lại để tiếp tục.`)),
+      () => reject(new ChainTimeoutError(`${label} quá thời gian chờ (${formatDuration(ms)}). ${hint}`)),
       ms,
     );
   });
@@ -78,6 +88,8 @@ export class Engine {
     for (let i = 0; i < count; i++) {
       const mnemonic = newMnemonic();
       const keys = await deriveKeys(mnemonic, this.d.network.networkId);
+      // Kiểm tra lại ngay trước khi ghi (không có await giữa hai bước): bấm đúp không tạo hai ví tổng.
+      if (kind === 'treasury' && this.d.store.getTreasury()) throw new Error('Đã có ví tổng');
       const record: WalletRecord = {
         id: randomUUID(),
         label: kind === 'treasury' ? 'Ví tổng' : `${labelPrefix} ${existing + i + 1}`,
@@ -151,9 +163,14 @@ export class Engine {
    * Bọc một lệnh gọi chuỗi có thể chờ mãi bằng timeout. Khi quá hạn, ví đang dùng bị đóng và bỏ khỏi
    * bộ nhớ đệm để lần thử lại mở ví mới (ví cũ có thể đang kẹt giữa chừng).
    */
-  private async guarded<T>(walletId: string, label: string, promise: Promise<T>): Promise<T> {
+  private async guarded<T>(
+    walletId: string,
+    label: string,
+    promise: Promise<T>,
+    opts: { ms?: number; hint?: string } = {},
+  ): Promise<T> {
     try {
-      return await withTimeout(promise, this.d.chainCallTimeoutMs ?? DEFAULT_CHAIN_CALL_TIMEOUT_MS, label);
+      return await withTimeout(promise, opts.ms ?? this.d.chainCallTimeoutMs ?? DEFAULT_CHAIN_CALL_TIMEOUT_MS, label, opts.hint);
     } catch (e) {
       if (e instanceof ChainTimeoutError) {
         const stuck = this.open.get(walletId);
@@ -164,10 +181,19 @@ export class Engine {
     }
   }
 
+  /** balances(true) có thể chờ đồng bộ mãi: bọc bằng syncTimeoutMs. */
+  private syncBalances(walletId: string, cw: ChainWallet) {
+    return this.guarded(walletId, 'Đồng bộ ví', cw.balances(true), { ms: this.d.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS });
+  }
+
   private async getOpen(w: WalletRecord): Promise<ChainWallet> {
     const cached = this.open.get(w.id);
     if (cached) return cached;
-    const opened = await this.d.chain.open(this.d.network, this.d.vault.decrypt(w.encryptedMnemonic));
+    const opened = await withTimeout(
+      this.d.chain.open(this.d.network, this.d.vault.decrypt(w.encryptedMnemonic)),
+      this.d.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS,
+      'Mở ví',
+    );
     this.open.set(w.id, opened);
     await this.trim();
     return opened;
@@ -219,17 +245,17 @@ export class Engine {
     if (step === 'funding') return this.stepFunding(w);
     const cw = await this.getOpen(w);
     if (step === 'syncing') {
-      this.saveBalances(w.id, await cw.balances(true));
+      this.saveBalances(w.id, await this.syncBalances(w.id, cw));
       return 'ok';
     }
     await this.guarded(w.id, 'Đăng ký DUST', cw.ensureDust());
-    this.saveBalances(w.id, await cw.balances(true));
+    this.saveBalances(w.id, await this.syncBalances(w.id, cw));
     return 'ok';
   }
 
   private async stepFunding(w: WalletRecord): Promise<'ok' | 'wait'> {
     const cw = await this.getOpen(w);
-    const mine = await cw.balances(true);
+    const mine = await this.syncBalances(w.id, cw);
     this.saveBalances(w.id, mine);
 
     if (w.kind === 'treasury') {
@@ -240,26 +266,70 @@ export class Engine {
       return 'wait';
     }
 
-    if (mine.night >= this.d.fundAmount) return 'ok';
+    const fund = this.d.fundAmount;
+    const waitMs = this.d.waitFundMs ?? 10 * 60_000;
+    if (mine.night >= fund) {
+      this.clearFundingMarker(w.id);
+      return 'ok';
+    }
     const treasury = this.d.store.getTreasury();
     if (!treasury || treasury.status !== 'ready') {
       this.patchWallet(w.id, { message: 'Chờ ví tổng sẵn sàng (cần có tNIGHT và DUST) để cấp tNIGHT cho ví này' });
       return 'wait';
     }
     const tw = await this.getOpen(treasury);
-    const tb = await tw.balances(true);
+    const tb = await this.syncBalances(treasury.id, tw);
     this.saveBalances(treasury.id, tb);
-    if (tb.night < this.d.fundAmount) {
+
+    // Dấu "đã gửi chuyển tiền" (bền vững) chống chuyển hai lần khi giao dịch đã gửi nhưng chưa xác nhận.
+    const marker = this.readFundingMarker(w.id);
+    if (marker) {
+      if (tb.night <= marker.treasuryBefore - fund) {
+        // Ví tổng đã bị trừ => giao dịch đã lên chuỗi: chỉ chờ, tuyệt đối không chuyển lại.
+        if (await cw.waitNight(fund, waitMs)) {
+          this.clearFundingMarker(w.id);
+          this.saveBalances(w.id, await this.syncBalances(w.id, cw));
+          return 'ok';
+        }
+        this.patchWallet(w.id, { message: 'Giao dịch chuyển tNIGHT đã gửi nhưng chưa được xác nhận, đang chờ…' });
+        return 'wait';
+      }
+      this.clearFundingMarker(w.id); // giao dịch cũ chưa từng tới chuỗi: được phép chuyển lại
+    }
+
+    if (tb.night < fund) {
       throw new Error(
-        `Ví tổng không đủ tNIGHT (còn ${night(tb.night)}, cần ${night(this.d.fundAmount)}). ` +
+        `Ví tổng không đủ tNIGHT (còn ${night(tb.night)}, cần ${night(fund)}). ` +
           'Xin thêm tNIGHT từ faucet cho ví tổng rồi bấm Thử lại.',
       );
     }
-    await this.guarded(treasury.id, 'Chuyển tNIGHT', tw.transferNight(w.unshieldedAddress, this.d.fundAmount));
-    const arrived = await cw.waitNight(this.d.fundAmount, this.d.waitFundMs ?? 10 * 60_000);
-    if (!arrived) throw new Error('Đã chuyển tNIGHT nhưng ví chưa nhận được sau 10 phút. Bấm Thử lại để kiểm tra tiếp.');
-    this.saveBalances(w.id, await cw.balances(true));
+    // Ghi dấu TRƯỚC khi gửi: nếu app sập hoặc quá thời gian giữa chừng, dấu vẫn còn.
+    this.d.store.setMeta(fundingKey(w.id), JSON.stringify({ treasuryBefore: tb.night.toString(), at: Date.now() }));
+    await this.guarded(treasury.id, 'Chuyển tNIGHT', tw.transferNight(w.unshieldedAddress, fund));
+    if (!(await cw.waitNight(fund, waitMs))) {
+      throw new Error(
+        `Đã chuyển tNIGHT nhưng ví chưa nhận được sau ${formatDuration(waitMs)}. ` +
+          'Bấm Thử lại: app sẽ chờ giao dịch đã gửi, không chuyển lại.',
+      );
+    }
+    this.clearFundingMarker(w.id);
+    this.saveBalances(w.id, await this.syncBalances(w.id, cw));
     return 'ok';
+  }
+
+  private readFundingMarker(walletId: string): { treasuryBefore: bigint; at: number } | null {
+    const raw = this.d.store.getMeta(fundingKey(walletId));
+    if (!raw) return null;
+    try {
+      const p = JSON.parse(raw) as { treasuryBefore: string; at: number };
+      return { treasuryBefore: BigInt(p.treasuryBefore), at: Number(p.at) };
+    } catch {
+      return null; // dấu hỏng coi như không có
+    }
+  }
+
+  private clearFundingMarker(walletId: string) {
+    if (this.d.store.getMeta(fundingKey(walletId))) this.d.store.setMeta(fundingKey(walletId), '');
   }
 
   private async runRefresh(id: string) {
@@ -267,7 +337,7 @@ export class Engine {
     if (!w) return;
     try {
       const cw = await this.getOpen(w);
-      this.saveBalances(id, await cw.balances(true));
+      this.saveBalances(id, await this.syncBalances(w.id, cw));
     } catch (e) {
       this.patchWallet(id, { message: `Không làm mới được số dư: ${errMsg(e)}` });
     }
@@ -278,13 +348,13 @@ export class Engine {
     if (!t || t.status === 'done') return;
     const w = this.d.store.getWallet(t.walletId);
     if (!w || w.status !== 'ready') {
-      this.patchToken(id, { status: 'failed', failedStep: 'deploying', message: 'Ví chưa sẵn sàng (cần có DUST). Đợi ví về trạng thái Sẵn sàng rồi thử lại.' });
+      this.patchToken(id, { status: 'failed', failedStep: t?.contractAddress ? 'minting' : 'deploying', message: 'Ví chưa sẵn sàng (cần có DUST). Đợi ví về trạng thái Sẵn sàng rồi thử lại.' });
       return;
     }
-    let step: 'deploying' | 'minting' = 'deploying';
+    let step: 'deploying' | 'minting' = t.contractAddress ? 'minting' : 'deploying';
     try {
       const cw = await this.getOpen(w);
-      const b = await cw.balances(true);
+      const b = await this.syncBalances(w.id, cw);
       this.saveBalances(w.id, b);
       if (b.dust <= 0n) throw new Error('Ví chưa có DUST để trả phí giao dịch');
       const ownerSecret = Buffer.from(this.d.vault.decrypt(t.encryptedOwnerSecret), 'hex');
@@ -302,6 +372,7 @@ export class Engine {
             imageUri: t.imageUri,
             imageSha256Hex: t.imageSha256,
           }),
+          { hint: DEPLOY_TIMEOUT_HINT },
         );
         t = this.patchToken(id, { contractAddress: r.contractAddress, deployTxId: r.txId });
       }
@@ -323,7 +394,11 @@ export class Engine {
         t = this.patchToken(id, { mintTxId: r.txId, tokenColor: r.tokenColor });
       }
       this.patchToken(id, { status: 'done', failedStep: null, message: null });
-      this.saveBalances(w.id, await cw.balances(false));
+      try {
+        this.saveBalances(w.id, await cw.balances(false));
+      } catch {
+        /* token đã done; số dư sẽ được cập nhật ở lần làm mới sau, không được ghi đè trạng thái */
+      }
     } catch (e) {
       this.patchToken(id, { status: 'failed', failedStep: step, message: errMsg(e) });
     }
