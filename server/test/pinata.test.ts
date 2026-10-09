@@ -62,9 +62,8 @@ describe('pinata', () => {
   it('báo lỗi khi response.json() timeout', async () => {
     const fetchImpl = vi.fn(async () => {
       const resp = new Response('{"IpfsHash":"test"}', { status: 200 });
-      const originalJson = resp.json.bind(resp);
       resp.json = async () => {
-        throw Object.assign(new Error('timeout'), { name: 'TimeoutError' });
+        throw new DOMException('timeout', 'TimeoutError');
       };
       return resp;
     });
@@ -76,5 +75,66 @@ describe('pinata', () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ IpfsHash: 123 }), { status: 200 }));
     const ipfs = createIpfs({ jwt: 'J', gateway: 'https://gw/ipfs/', fetchImpl: fetchImpl as never });
     await expect(ipfs.pinImage(png, 'a.png', 'image/png')).rejects.toThrow(/IpfsHash/);
+  });
+
+  it('JWT redaction không bị cut off khi straddle cắt 200 ký tự', async () => {
+    const jwt = 'SECRETJWT_' + 'x'.repeat(40);
+    const fetchImpl = vi.fn(async () => {
+      const body = 'x'.repeat(150) + ' Bearer ' + jwt;
+      return new Response(body, { status: 401 });
+    });
+    const ipfs = createIpfs({ jwt, gateway: 'https://gw/ipfs/', fetchImpl: fetchImpl as never });
+    const err = (await ipfs.pinImage(png, 'a.png', 'image/png').catch((e) => e)) as Error;
+    expect(err.message).toMatch(/HTTP 401/);
+    // Assert no 8-char prefix of JWT leaks
+    expect(err.message).not.toContain(jwt.substring(0, 8));
+    // Assert no substring >= 8 chars matching SECRETJWT pattern
+    for (let i = 8; i <= jwt.length; i++) {
+      expect(err.message).not.toContain(jwt.substring(0, i));
+    }
+  });
+
+  it('báo lỗi khi Pinata trả JSON null', async () => {
+    const fetchImpl = vi.fn(async () => new Response('null', { status: 200 }));
+    const ipfs = createIpfs({ jwt: 'J', gateway: 'https://gw/ipfs/', fetchImpl: fetchImpl as never });
+    await expect(ipfs.pinImage(png, 'a.png', 'image/png')).rejects.toThrow(/Phản hồi Pinata không hợp lệ/);
+  });
+
+  it('báo lỗi khi Pinata trả JSON number', async () => {
+    const fetchImpl = vi.fn(async () => new Response('123', { status: 200 }));
+    const ipfs = createIpfs({ jwt: 'J', gateway: 'https://gw/ipfs/', fetchImpl: fetchImpl as never });
+    await expect(ipfs.pinImage(png, 'a.png', 'image/png')).rejects.toThrow(/Phản hồi Pinata không hợp lệ/);
+  });
+
+  it('báo lỗi khi Pinata trả JSON string', async () => {
+    const fetchImpl = vi.fn(async () => new Response('"error"', { status: 200 }));
+    const ipfs = createIpfs({ jwt: 'J', gateway: 'https://gw/ipfs/', fetchImpl: fetchImpl as never });
+    await expect(ipfs.pinImage(png, 'a.png', 'image/png')).rejects.toThrow(/Phản hồi Pinata không hợp lệ/);
+  });
+
+  it('báo lỗi khi Pinata trả JSON array', async () => {
+    const fetchImpl = vi.fn(async () => new Response('[]', { status: 200 }));
+    const ipfs = createIpfs({ jwt: 'J', gateway: 'https://gw/ipfs/', fetchImpl: fetchImpl as never });
+    await expect(ipfs.pinImage(png, 'a.png', 'image/png')).rejects.toThrow(/Phản hồi Pinata không hợp lệ/);
+  });
+
+  it('báo lỗi khi res.text() fails trên 401 response', async () => {
+    const fetchImpl = vi.fn(async () => {
+      const resp = new Response('error body', { status: 401 });
+      resp.text = async () => {
+        throw new Error('text read failed');
+      };
+      return resp;
+    });
+    const ipfs = createIpfs({ jwt: 'J', gateway: 'https://gw/ipfs/', fetchImpl: fetchImpl as never });
+    const err = (await ipfs.pinImage(png, 'a.png', 'image/png').catch((e) => e)) as Error;
+    expect(err.message).toMatch(/Pinata từ chối upload ảnh \(HTTP 401\)/);
+  });
+
+  it('Bearer token được mask thành *** trong error message', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"error":"bad Bearer SECRETJWT"}', { status: 401 }));
+    const ipfs = createIpfs({ jwt: 'SECRETJWT', gateway: 'https://gw/ipfs/', fetchImpl: fetchImpl as never });
+    const err = (await ipfs.pinImage(png, 'a.png', 'image/png').catch((e) => e)) as Error;
+    expect(err.message).toContain('Bearer ***');
   });
 });

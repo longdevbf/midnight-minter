@@ -17,7 +17,8 @@ export function createIpfs(opts: { jwt: string; gateway: string; fetchImpl?: typ
   };
 
   const maskSecrets = (text: string): string => {
-    return text.split(opts.jwt).join('***').split(`Bearer ${opts.jwt}`).join('Bearer ***');
+    if (!opts.jwt) return text;
+    return text.split(opts.jwt).join('***');
   };
 
   return {
@@ -42,11 +43,11 @@ export function createIpfs(opts: { jwt: string; gateway: string; fetchImpl?: typ
       if (!res.ok) {
         let body = '';
         try {
-          body = (await res.text()).slice(0, 200);
+          body = await res.text();
         } catch {
           // If reading body fails, just use empty body but still throw
         }
-        const maskedBody = maskSecrets(body);
+        const maskedBody = maskSecrets(body).slice(0, 200);
         throw new Error(`Pinata từ chối upload ảnh (HTTP ${res.status}): ${maskedBody}`);
       }
       let json: unknown;
@@ -56,6 +57,10 @@ export function createIpfs(opts: { jwt: string; gateway: string; fetchImpl?: typ
         if (isTimeoutError(err)) {
           throw new Error('Pinata không phản hồi sau 60 giây, hãy thử lại');
         }
+        throw new Error('Phản hồi Pinata không hợp lệ (không phải JSON)');
+      }
+      // Validate response is a non-null, non-array object
+      if (json === null || Array.isArray(json) || typeof json !== 'object') {
         throw new Error('Phản hồi Pinata không hợp lệ (không phải JSON)');
       }
       const parsed = json as { IpfsHash?: unknown };
