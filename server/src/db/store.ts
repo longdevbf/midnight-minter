@@ -12,7 +12,7 @@ const fromRow = <T>(row: Record<string, unknown> | undefined): T | null => {
 
 const WALLET_UPDATABLE = new Set(['label', 'status', 'failedStep', 'message', 'nightBalance', 'dustBalance']);
 const TOKEN_UPDATABLE = new Set([
-  'status', 'failedStep', 'message', 'contractAddress', 'tokenColor', 'deployTxId', 'mintTxId',
+  'status', 'failedStep', 'message', 'contractAddress', 'tokenColor', 'deployTxId', 'mintTxId', 'encryptedOwnerSecret',
 ]);
 
 const WALLET_COLUMNS = new Set([

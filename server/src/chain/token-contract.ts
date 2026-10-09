@@ -10,6 +10,7 @@ import type { CoinPublicKey, EncPublicKey, FinalizedTransaction } from '@midnigh
 import type { MidnightProvider, UnboundTransaction, WalletProvider } from '@midnight-ntwrk/midnight-js-types';
 import { ttlOneHour, validatePassword } from '@midnight-ntwrk/midnight-js-utils';
 import { Contract, ledger } from '../../../managed/token/contract/index.js';
+import { submitWithRetry } from './submit-retry';
 import type { DeployArgs, MintArgs } from './types';
 import type { OpenWallet } from './wallet-runtime';
 
@@ -33,7 +34,7 @@ class MinterWalletProvider implements WalletProvider, MidnightProvider {
     return this.w.facade.finalizeRecipe(recipe);
   }
   submitTx(tx: FinalizedTransaction): Promise<string> {
-    return this.w.facade.submitTransaction(tx);
+    return submitWithRetry(() => this.w.facade.submitTransaction(tx));
   }
 }
 

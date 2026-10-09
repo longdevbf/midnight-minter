@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { SnapshotSkipped, type ChainWallet, type Chain, type WalletSnapshot } from '../chain/types';
 import { deriveKeys, newMnemonic } from '../chain/keys';
@@ -191,8 +191,9 @@ export class Engine {
 
   /** Chạy tiếp việc dở dang sau khi mở lại app. */
   resume() {
-    for (const w of this.d.store.listIncompleteWallets()) this.queue.enqueue({ type: 'wallet', id: w.id });
+    // Token trước: job đầu tiên chạy ngay, mà mint của ví đã sẵn sàng nhanh hơn nhiều so với đồng bộ lạnh một ví mới.
     for (const t of this.d.store.listIncompleteTokens()) this.queue.enqueue({ type: 'token', id: t.id });
+    for (const w of this.d.store.listIncompleteWallets()) this.queue.enqueue({ type: 'wallet', id: w.id });
   }
 
   /**
@@ -595,23 +596,37 @@ export class Engine {
       const b = await this.syncBalances(w.id, cw);
       this.saveBalances(w.id, b);
       if (b.dust <= 0n) throw new BusinessError('Ví chưa có DUST để trả phí giao dịch');
-      const ownerSecret = Buffer.from(this.d.vault.decrypt(t.encryptedOwnerSecret), 'hex');
+      let ownerSecret = Buffer.from(this.d.vault.decrypt(t.encryptedOwnerSecret), 'hex');
 
       if (!t.contractAddress) {
         t = this.patchToken(id, { status: 'deploying', failedStep: null, message: null });
-        const r = await this.guarded(
-          w.id,
-          'Deploy contract',
-          cw.deployToken({
-            ownerSecret,
-            name: t.name,
-            symbol: t.symbol,
-            decimals: t.decimals,
-            imageUri: t.imageUri,
-            imageSha256Hex: t.imageSha256,
-          }),
-          { hint: DEPLOY_TIMEOUT_HINT },
-        );
+        const tok = t; // bản không-null cho closure bên dưới
+        const deployOnce = () =>
+          this.guarded(
+            w.id,
+            'Deploy contract',
+            cw.deployToken({
+              ownerSecret,
+              name: tok.name,
+              symbol: tok.symbol,
+              decimals: tok.decimals,
+              imageUri: tok.imageUri,
+              imageSha256Hex: tok.imageSha256,
+            }),
+            { hint: DEPLOY_TIMEOUT_HINT },
+          );
+        let r: { contractAddress: string; txId: string };
+        try {
+          r = await deployOnce();
+        } catch (e) {
+          // Đo được trên preview: node từ chối cố định một khoá chủ cụ thể cùng tên/ảnh (khoá khác thì qua).
+          // Khoá chưa từng gắn với contract nào (chưa có contractAddress) nên đổi khoá mới và thử lại đúng một lần.
+          if (!/Transaction submission error/i.test(rawErrMsg(e))) throw e;
+          console.warn(`Token ${id}: node từ chối giao dịch deploy, đổi khoá chủ và thử lại một lần`);
+          ownerSecret = randomBytes(32);
+          t = this.patchToken(id, { encryptedOwnerSecret: this.d.vault.encrypt(ownerSecret.toString('hex')) });
+          r = await deployOnce();
+        }
         t = this.patchToken(id, { contractAddress: r.contractAddress, deployTxId: r.txId });
       }
 
@@ -640,6 +655,18 @@ export class Engine {
       await this.saveSnapshot(w.id, cw, true); // không bao giờ ném
     } catch (e) {
       this.patchToken(id, { status: 'failed', failedStep: step, message: this.errMsg(e) });
+      console.error(`Token ${id} lỗi ở bước ${step}: ${this.errChain(e)}`);
     }
+  }
+
+  /** Chuỗi nguyên nhân lỗi (qua redact) để chẩn đoán trong log; thông báo hiển thị cho người dùng vẫn giữ ngắn gọn. */
+  private errChain(e: unknown): string {
+    const parts: string[] = [];
+    let cur: unknown = e;
+    for (let i = 0; i < 6 && cur !== undefined && cur !== null; i++) {
+      parts.push(cur instanceof Error ? `${cur.name}: ${cur.message}` : String(cur));
+      cur = cur instanceof Error ? (cur as { cause?: unknown }).cause : undefined;
+    }
+    return this.errMsg(new Error(parts.join(' <- ')));
   }
 }

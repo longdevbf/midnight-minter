@@ -54,3 +54,22 @@ describe('JobQueue', () => {
     }
   });
 });
+
+describe('JobQueue ưu tiên token', () => {
+  it('job token chen lên trước các job ví đang chờ nhưng không ngắt job đang chạy', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const q = new JobQueue(async (j) => {
+      order.push(`${j.type}:${j.id}`);
+      if (j.id === 'w1') await gate;
+    });
+    q.enqueue({ type: 'wallet', id: 'w1' });
+    q.enqueue({ type: 'wallet', id: 'w2' });
+    q.enqueue({ type: 'token', id: 't1' });
+    q.enqueue({ type: 'token', id: 't2' });
+    release();
+    await q.idle();
+    expect(order).toEqual(['wallet:w1', 'token:t1', 'token:t2', 'wallet:w2']);
+  });
+});

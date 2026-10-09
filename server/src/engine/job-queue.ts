@@ -15,7 +15,14 @@ export class JobQueue {
     const key = `${job.type}:${job.id}`;
     if (this.keys.has(key)) return false;
     this.keys.add(key);
-    this.pending.push(job);
+    // Job mint/token chạy nhanh (ví đã sẵn sàng) nên được chen lên trước các job ví (đồng bộ lạnh ~20 phút mỗi ví).
+    if (job.type === 'token') {
+      const at = this.pending.findIndex((j) => j.type !== 'token');
+      if (at === -1) this.pending.push(job);
+      else this.pending.splice(at, 0, job);
+    } else {
+      this.pending.push(job);
+    }
     void this.pump();
     return true;
   }

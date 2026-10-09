@@ -253,6 +253,31 @@ describe('Engine — mint', () => {
     expect(t.message).toMatch(/lỗi giả lập/);
   });
 
+  it('deploy bị node từ chối (submission error): đổi khoá chủ mới và thử lại một lần', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    ctx.store.insertToken(newToken());
+    const before = ctx.store.getToken('tok1')!.encryptedOwnerSecret;
+    ctx.fake.state.failMessage = 'Transaction submission error';
+    ctx.fake.state.failOnce.add('deploy');
+    ctx.engine.enqueueToken('tok1');
+    await ctx.engine.idle();
+    const t = ctx.store.getToken('tok1')!;
+    expect(t.status).toBe('done');
+    expect(t.encryptedOwnerSecret).not.toBe(before);
+    expect(ctx.fake.state.calls.filter((c) => c.startsWith('deploy:'))).toHaveLength(2);
+    warn.mockRestore();
+  });
+
+  it('deploy lỗi khác submission error: không đổi khoá', async () => {
+    ctx.store.insertToken(newToken());
+    const before = ctx.store.getToken('tok1')!.encryptedOwnerSecret;
+    ctx.fake.state.failOnce.add('deploy');
+    ctx.engine.enqueueToken('tok1');
+    await ctx.engine.idle();
+    expect(ctx.store.getToken('tok1')!.encryptedOwnerSecret).toBe(before);
+    expect(ctx.fake.state.calls.filter((c) => c.startsWith('deploy:'))).toHaveLength(1);
+  });
+
   it('ví chưa sẵn sàng: token failed với lý do rõ, không gọi chuỗi', async () => {
     const [c2] = await ctx.engine.createWallets(1, 'child');
     await ctx.engine.idle();
