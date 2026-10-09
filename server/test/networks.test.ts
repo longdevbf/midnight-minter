@@ -49,4 +49,17 @@ describe('loadEnv', () => {
   it('thiếu PINATA_JWT thì báo lỗi', () => {
     expect(() => loadEnv({})).toThrow(/PINATA_JWT/);
   });
+  it('biến rỗng/chỉ có khoảng trắng được coi như chưa đặt (preview không cần BLOCKFROST_PROJECT_ID)', () => {
+    const e = loadEnv({ ...base, NETWORK: 'preview', BLOCKFROST_PROJECT_ID: '' });
+    expect(e.network).toBe('preview');
+    expect(e.blockfrostProjectId).toBeUndefined();
+  });
+  it('PROOF_SERVER_URL và PORT để trống thì dùng mặc định', () => {
+    const e = loadEnv({ ...base, PROOF_SERVER_URL: '', PORT: '' });
+    expect(e.proofServerUrl).toBeUndefined();
+    expect(e.port).toBe(8787);
+  });
+  it('PINATA_JWT chỉ có khoảng trắng thì báo lỗi', () => {
+    expect(() => loadEnv({ PINATA_JWT: '   ' })).toThrow(/PINATA_JWT/);
+  });
 });

@@ -26,7 +26,12 @@ export interface AppEnv {
 }
 
 export function loadEnv(src: Record<string, string | undefined> = process.env): AppEnv {
-  const parsed = EnvSchema.safeParse(src);
+  // Biến rỗng/chỉ có khoảng trắng (vd. `BLOCKFROST_PROJECT_ID=` trong .env.example) coi như chưa đặt.
+  const cleaned: Record<string, string> = {};
+  for (const [k, v] of Object.entries(src)) {
+    if (typeof v === 'string' && v.trim() !== '') cleaned[k] = v;
+  }
+  const parsed = EnvSchema.safeParse(cleaned);
   if (!parsed.success) {
     const msg = parsed.error.issues.map((i) => `${i.path.join('.') || 'env'}: ${i.message}`).join('; ');
     throw new Error(`Cấu hình .env không hợp lệ: ${msg}`);
