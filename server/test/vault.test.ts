@@ -41,4 +41,54 @@ describe('vault', () => {
     const blob = createVault('mat-khau-chu-123', salt).encrypt('seed');
     expect(createVault('mat-khau-chu-123', salt).decrypt(blob)).toBe('seed');
   });
+
+  it('mã hóa chuỗi trống rồi giải mã trả về chuỗi trống', () => {
+    const v = createVault('mat-khau-chu-123', salt);
+    expect(v.decrypt(v.encrypt(''))).toBe('');
+  });
+
+  it('tag bị cắt ngắn (8 bytes thay vì 16) bị từ chối', () => {
+    const v = createVault('mat-khau-chu-123', salt);
+    const parts = v.encrypt('seed').split(':');
+    parts[2] = Buffer.from('xxxx').toString('base64'); // 4 bytes → 8 bytes base64
+    expect(() => v.decrypt(parts.join(':'))).toThrow(/không hợp lệ/);
+  });
+
+  it('IV sai độ dài bị từ chối', () => {
+    const v = createVault('mat-khau-chu-123', salt);
+    const parts = v.encrypt('seed').split(':');
+    parts[1] = Buffer.from('xx').toString('base64'); // 2 bytes thay vì 12
+    expect(() => v.decrypt(parts.join(':'))).toThrow(/không hợp lệ/);
+  });
+
+  it('tag bị đảo bit (độ dài đúng nhưng sai nội dung) → sai mật khẩu', () => {
+    const v = createVault('mat-khau-chu-123', salt);
+    const parts = v.encrypt('seed').split(':');
+    const tagBuf = Buffer.from(parts[2], 'base64');
+    tagBuf[0] ^= 0xff; // flip all bits in first byte
+    parts[2] = tagBuf.toString('base64');
+    expect(() => v.decrypt(parts.join(':'))).toThrow(/Sai mật khẩu chủ/);
+  });
+
+  it('ciphertext bị đảo bit → sai mật khẩu', () => {
+    const v = createVault('mat-khau-chu-123', salt);
+    const parts = v.encrypt('seed').split(':');
+    const encBuf = Buffer.from(parts[3], 'base64');
+    if (encBuf.length > 0) encBuf[0] ^= 0xff;
+    parts[3] = encBuf.toString('base64');
+    expect(() => v.decrypt(parts.join(':'))).toThrow(/Sai mật khẩu chủ/);
+  });
+
+  it('blob với 5 segments (quá nhiều) bị từ chối', () => {
+    const v = createVault('mat-khau-chu-123', salt);
+    expect(() => v.decrypt('v1:a:b:c:d')).toThrow(/không hợp lệ/);
+  });
+
+  it('mật khẩu NFC mã hóa được, mật khẩu NFD cùng nội dung giải mã được', () => {
+    // Ví dụ: chữ "é" có thể là NFC (U+00E9) hoặc NFD (U+0065 + U+0301)
+    const nfc = 'mat-khau-é-nfc'.normalize('NFC');
+    const nfd = 'mat-khau-é-nfc'.normalize('NFD');
+    const blob = createVault(nfc, salt).encrypt('seed');
+    expect(createVault(nfd, salt).decrypt(blob)).toBe('seed');
+  });
 });
