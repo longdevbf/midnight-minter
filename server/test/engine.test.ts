@@ -114,9 +114,12 @@ describe('Engine — ví', () => {
   });
 
   it('lỗi ở bước DUST: failed(dust_pending), retry chạy lại đúng bước đó và không chuyển tiền lần nữa', async () => {
+    ctx = setup({ autoRetryDelayMs: 1 });
     await readyTreasury(ctx);
-    ctx.fake.state.failOnce.add('ensureDust'); // đặt trước khi tạo vì job chạy ngay
+    // đặt trước khi tạo vì job chạy ngay; 3 lần = lần đầu + 2 lần tự thử lại (F9.2) đều lỗi
+    ctx.fake.state.failCount.set('ensureDust', 3);
     const [c] = await ctx.engine.createWallets(1, 'child');
+    await vi.waitFor(() => expect(ctx.store.getWallet(c.id)!.status).toBe('failed'), { timeout: 2000, interval: 5 });
     await ctx.engine.idle();
     expect(ctx.store.getWallet(c.id)!.failedStep).toBe('dust_pending');
     const transfersBefore = ctx.fake.state.calls.filter((x) => x.startsWith('transfer:')).length;
@@ -461,7 +464,8 @@ describe('Engine — không chuyển tNIGHT hai lần', () => {
 
 describe('Engine — đồng bộ ví quá thời gian', () => {
   it('balances(true) treo ở bước syncing: failed(syncing) quá thời gian, thử lại thành công', async () => {
-    const ctx = setup({ syncTimeoutMs: 30 });
+    // 150 ms (không phải 30): syncTimeoutMs cũng giới hạn open() mà open giả còn derive khóa, máy bận có thể quá 30 ms.
+    const ctx = setup({ syncTimeoutMs: 150 });
     await readyTreasury(ctx);
     let armed = true;
     ctx.bus.on('change', () => {
@@ -625,6 +629,119 @@ describe('Engine — mở ví quá thời gian không rò ví (F6)', () => {
     expect(ctx.fake.state.closed).toBe(closedBefore + 1); // ví mở muộn đã được đóng
     await engine2.closeAll();
     await ctx.engine.closeAll();
+  });
+});
+
+describe('Engine — tự thử lại lỗi tạm ở bước syncing/dust_pending (F9.2)', () => {
+  const dustCalls = (ctx: ReturnType<typeof setup>, id: string) =>
+    ctx.fake.state.calls.filter((x) => x === `ensureDust:${mnemonicOf(ctx, id)}`).length;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const settle = async (ctx: ReturnType<typeof setup>, id: string, status: 'ready' | 'failed') => {
+    await vi.waitFor(() => expect(ctx.store.getWallet(id)!.status).toBe(status), { timeout: 2000, interval: 5 });
+    await ctx.engine.idle();
+  };
+
+  it('ensureDust lỗi một lần: tự thử lại đúng một lần rồi ready, xoá bộ đếm', async () => {
+    const ctx = setup({ autoRetryDelayMs: 5 });
+    await readyTreasury(ctx);
+    ctx.fake.state.failOnce.add('ensureDust');
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const pending = ctx.store.getWallet(c.id)!;
+    expect(pending.status).toBe('dust_pending');
+    expect(pending.failedStep).toBeNull();
+    expect(pending.message).toMatch(/^Lỗi tạm thời, tự thử lại sau .+ \(lần 1\/2\)/);
+    await settle(ctx, c.id, 'ready');
+    expect(dustCalls(ctx, c.id)).toBe(2);
+    expect(ctx.store.getMeta(`autoretry:${c.id}`) ?? '').toBe('');
+    await ctx.engine.closeAll();
+  });
+
+  it('lỗi ở bước syncing cũng được tự thử lại', async () => {
+    const ctx = setup({ autoRetryDelayMs: 5 });
+    await readyTreasury(ctx);
+    let armed = true;
+    ctx.bus.on('change', () => {
+      const child = ctx.store.listWallets().find((w) => w.kind === 'child');
+      if (armed && child?.status === 'syncing') {
+        armed = false;
+        ctx.fake.state.failOnce.add('balances');
+      }
+    });
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.status).toBe('syncing');
+    expect(ctx.store.getWallet(c.id)!.message).toMatch(/lần 1\/2/);
+    await settle(ctx, c.id, 'ready');
+    await ctx.engine.closeAll();
+  });
+
+  it('lỗi 3 lần liên tiếp: failed(dust_pending) sau đúng 2 lần tự thử lại; bấm Thử lại thì bộ đếm về 0', async () => {
+    const ctx = setup({ autoRetryDelayMs: 5 });
+    await readyTreasury(ctx);
+    ctx.fake.state.failCount.set('ensureDust', 3);
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    await settle(ctx, c.id, 'failed');
+    const w = ctx.store.getWallet(c.id)!;
+    expect(w.failedStep).toBe('dust_pending');
+    expect(w.message).toMatch(/lỗi giả lập ở ensureDust/);
+    expect(dustCalls(ctx, c.id)).toBe(3);
+    await sleep(30);
+    expect(dustCalls(ctx, c.id)).toBe(3); // không còn lần tự thử nào nữa
+
+    // người dùng bấm Thử lại: lại được tự thử lại từ lần 1/2
+    ctx.fake.state.failCount.set('ensureDust', 1);
+    ctx.engine.retryWallet(c.id);
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.message).toMatch(/lần 1\/2/);
+    await settle(ctx, c.id, 'ready');
+    expect(dustCalls(ctx, c.id)).toBe(5);
+    await ctx.engine.closeAll();
+  });
+
+  it('lỗi nghiệp vụ (quá thời gian chờ) không tự thử lại', async () => {
+    const ctx = setup({ autoRetryDelayMs: 5, dustTimeoutMs: 30 });
+    await readyTreasury(ctx);
+    ctx.fake.state.hang.add('ensureDust');
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.status).toBe('failed');
+    await sleep(40);
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.status).toBe('failed');
+    expect(ctx.store.getWallet(c.id)!.failedStep).toBe('dust_pending');
+    expect(dustCalls(ctx, c.id)).toBe(1);
+    await ctx.engine.closeAll();
+  });
+
+  it('lỗi ở bước funding không tự thử lại', async () => {
+    const ctx = setup({ autoRetryDelayMs: 5 });
+    await readyTreasury(ctx);
+    ctx.fake.state.failOnce.add('transfer');
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    await sleep(40);
+    await ctx.engine.idle();
+    const w = ctx.store.getWallet(c.id)!;
+    expect(w.status).toBe('failed');
+    expect(w.failedStep).toBe('funding');
+    expect(transferCount(ctx)).toBe(1);
+    await ctx.engine.closeAll();
+  });
+
+  it('closeAll() huỷ lần tự thử lại đang chờ (không còn timer treo)', async () => {
+    const ctx = setup({ autoRetryDelayMs: 30 });
+    await readyTreasury(ctx);
+    ctx.fake.state.failOnce.add('ensureDust');
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(c.id)!.message).toMatch(/lần 1\/2/);
+    await ctx.engine.closeAll();
+    await sleep(80);
+    await ctx.engine.idle();
+    expect(dustCalls(ctx, c.id)).toBe(1);
+    expect(ctx.store.getWallet(c.id)!.status).toBe('dust_pending'); // mở lại app thì resume() chạy tiếp
   });
 });
 

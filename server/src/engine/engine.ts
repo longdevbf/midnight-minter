@@ -8,6 +8,7 @@ import type { Vault } from '../lib/vault';
 import type { TokenRecord, WalletKind, WalletRecord, WalletStatus } from '../types';
 import { NIGHT_DECIMALS, formatUnits } from '../../../shared/units';
 import { JobQueue, type Job } from './job-queue';
+import { BusinessError, ChainTimeoutError } from './errors';
 
 export interface EngineDeps {
   store: Store;
@@ -26,6 +27,8 @@ export interface EngineDeps {
    * số dư DUST thêm 20 phút). Mặc định 45 phút. Quá hạn thì ví bị đóng như các lệnh gọi chuỗi khác.
    */
   dustTimeoutMs?: number;
+  /** Chờ bao lâu trước khi tự thử lại lỗi tạm ở bước syncing/dust_pending. Mặc định 60 giây. */
+  autoRetryDelayMs?: number;
 }
 
 type WalletStep = 'funding' | 'syncing' | 'dust_pending';
@@ -45,7 +48,14 @@ const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULT_TIMEOUT_HINT = 'Bấm Thử lại để tiếp tục.';
 const DEPLOY_TIMEOUT_HINT = 'Kiểm tra ví trước khi bấm Thử lại vì giao dịch có thể vẫn được xác nhận.';
 
-class ChainTimeoutError extends Error {}
+const DEFAULT_AUTO_RETRY_DELAY_MS = 60_000;
+/** Số lần tự thử lại tối đa cho lỗi tạm ở bước syncing/dust_pending (Ruling 25). */
+const AUTO_RETRY_MAX = 2;
+const AUTO_RETRY_STEPS: ReadonlySet<WalletStep> = new Set(['syncing', 'dust_pending']);
+/** Bộ đếm bền vững trong bảng meta: số lần đã tự thử lại của ví này. */
+const autoRetryKey = (walletId: string) => `autoretry:${walletId}`;
+
+const clampTimer = (rawMs: number) => (Number.isNaN(rawMs) ? MAX_TIMER_MS : Math.min(Math.max(rawMs, 0), MAX_TIMER_MS));
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
@@ -55,7 +65,7 @@ function formatDuration(ms: number): string {
 
 /** Từ chối khi `promise` không xong sau `ms`; luôn dọn timer khi promise đã settle. */
 function withTimeout<T>(promise: Promise<T>, rawMs: number, label: string, hint = DEFAULT_TIMEOUT_HINT): Promise<T> {
-  const ms = Number.isNaN(rawMs) ? MAX_TIMER_MS : Math.min(Math.max(rawMs, 0), MAX_TIMER_MS);
+  const ms = clampTimer(rawMs);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
@@ -69,6 +79,10 @@ function withTimeout<T>(promise: Promise<T>, rawMs: number, label: string, hint 
 export class Engine {
   private readonly queue: JobQueue;
   private readonly open = new Map<string, ChainWallet>();
+  /** Lần tự thử lại đang hẹn giờ, theo id ví. */
+  private readonly autoRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Ví có job hiện tại do hẹn giờ tự thử lại đưa vào (không phải người dùng/resume). */
+  private readonly autoRuns = new Set<string>();
 
   constructor(private readonly d: EngineDeps) {
     this.queue = new JobQueue((job) => this.run(job));
@@ -79,7 +93,10 @@ export class Engine {
   }
 
   async closeAll() {
+    this.clearAutoRetryTimers();
     await this.queue.idle();
+    // Job vừa chạy xong có thể đã hẹn giờ lần tự thử lại mới. Ví giữ nguyên bước đang làm nên resume() chạy tiếp.
+    this.clearAutoRetryTimers();
     for (const [id, w] of this.open) {
       await w.close().catch(() => undefined);
       this.open.delete(id);
@@ -232,6 +249,8 @@ export class Engine {
   }
 
   private async runWallet(id: string) {
+    // Lần chạy không do hẹn giờ tự thử lại (người dùng bấm Thử lại, resume, tạo ví…) thì huỷ hẹn giờ và đếm lại từ 0.
+    if (!this.autoRuns.delete(id)) this.cancelAutoRetry(id);
     const w = this.d.store.getWallet(id);
     if (!w || w.status === 'ready') return;
     const from: WalletStatus = w.status === 'failed' ? ((w.failedStep as WalletStatus) ?? 'funding') : w.status;
@@ -244,10 +263,12 @@ export class Engine {
         const result = await this.runStep(step, this.d.store.getWallet(id) as WalletRecord);
         if (result === 'wait') return; // giữ nguyên status, message đã được ghi
       } catch (e) {
+        if (this.scheduleAutoRetry(id, step, e)) return;
         this.patchWallet(id, { status: 'failed', failedStep: step, message: errMsg(e) });
         return;
       }
     }
+    this.clearMeta(autoRetryKey(id));
     try {
       const cw = await this.getOpen(this.d.store.getWallet(id) as WalletRecord);
       this.saveBalances(id, await cw.balances(false));
@@ -321,7 +342,7 @@ export class Engine {
     }
 
     if (tb.night < fund) {
-      throw new Error(
+      throw new BusinessError(
         `Ví tổng không đủ tNIGHT (còn ${night(tb.night)}, cần ${night(fund)}). ` +
           'Xin thêm tNIGHT từ faucet cho ví tổng rồi bấm Thử lại.',
       );
@@ -352,7 +373,55 @@ export class Engine {
   }
 
   private clearFundingMarker(walletId: string) {
-    if (this.d.store.getMeta(fundingKey(walletId))) this.d.store.setMeta(fundingKey(walletId), '');
+    this.clearMeta(fundingKey(walletId));
+  }
+
+  private clearMeta(key: string) {
+    if (this.d.store.getMeta(key)) this.d.store.setMeta(key, '');
+  }
+
+  /**
+   * Lỗi tạm (không phải BusinessError) ở bước syncing/dust_pending: giữ ví ở bước đó và hẹn giờ chạy lại,
+   * tối đa AUTO_RETRY_MAX lần. Trả false khi không được tự thử lại (bước khác, lỗi nghiệp vụ, hết lượt).
+   * Funding/deploy/mint không bao giờ tự thử lại (nguy cơ chuyển tiền hoặc deploy trùng).
+   */
+  private scheduleAutoRetry(id: string, step: WalletStep, e: unknown): boolean {
+    if (!AUTO_RETRY_STEPS.has(step) || e instanceof BusinessError) return false;
+    const done = Number.parseInt(this.d.store.getMeta(autoRetryKey(id)) || '0', 10);
+    if (!(done >= 0 && done < AUTO_RETRY_MAX)) return false;
+    const attempt = done + 1;
+    const delay = clampTimer(this.d.autoRetryDelayMs ?? DEFAULT_AUTO_RETRY_DELAY_MS);
+    this.d.store.setMeta(autoRetryKey(id), String(attempt));
+    this.patchWallet(id, {
+      status: step,
+      failedStep: null,
+      message: `Lỗi tạm thời, tự thử lại sau ${formatDuration(delay)} (lần ${attempt}/${AUTO_RETRY_MAX}): ${errMsg(e)}`,
+    });
+    const old = this.autoRetryTimers.get(id);
+    if (old) clearTimeout(old);
+    this.autoRetryTimers.set(
+      id,
+      setTimeout(() => {
+        this.autoRetryTimers.delete(id);
+        // Đánh dấu TRƯỚC khi enqueue: hàng rảnh thì job bắt đầu chạy ngay trong enqueue.
+        this.autoRuns.add(id);
+        if (!this.queue.enqueue({ type: 'wallet', id })) this.autoRuns.delete(id);
+      }, delay),
+    );
+    return true;
+  }
+
+  /** Người dùng/resume tiếp quản: huỷ hẹn giờ đang chờ và xoá bộ đếm tự thử lại. */
+  private cancelAutoRetry(id: string) {
+    const timer = this.autoRetryTimers.get(id);
+    if (timer) clearTimeout(timer);
+    this.autoRetryTimers.delete(id);
+    this.clearMeta(autoRetryKey(id));
+  }
+
+  private clearAutoRetryTimers() {
+    for (const timer of this.autoRetryTimers.values()) clearTimeout(timer);
+    this.autoRetryTimers.clear();
   }
 
   private async runRefresh(id: string) {
@@ -379,7 +448,7 @@ export class Engine {
       const cw = await this.getOpen(w);
       const b = await this.syncBalances(w.id, cw);
       this.saveBalances(w.id, b);
-      if (b.dust <= 0n) throw new Error('Ví chưa có DUST để trả phí giao dịch');
+      if (b.dust <= 0n) throw new BusinessError('Ví chưa có DUST để trả phí giao dịch');
       const ownerSecret = Buffer.from(this.d.vault.decrypt(t.encryptedOwnerSecret), 'hex');
 
       if (!t.contractAddress) {

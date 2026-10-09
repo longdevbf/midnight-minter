@@ -10,6 +10,8 @@ export interface FakeState {
   contracts: Map<string, { minted: boolean; amount: bigint; color: string }>;
   calls: string[];
   failOnce: Set<string>;
+  /** tên thao tác → số lần còn phải ném lỗi (như failOnce nhưng nhiều lần liên tiếp) */
+  failCount: Map<string, number>;
   /** tên thao tác ("ensureDust" | "transfer" | "transferAfter" (treo sau khi đã trừ tiền) | "deploy" | "mint" | "balances" (chỉ khi sync=true)) sẽ treo mãi, như khi chờ finalization không bao giờ tới */
   hang: Set<string>;
   /** tên thao tác → số ms chờ trước khi chạy tiếp (vd. "ensureDust" chậm nhưng vẫn xong) */
@@ -30,7 +32,7 @@ export interface FakeState {
  */
 export function makeFakeChain() {
   const state: FakeState = {
-    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
+    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), failCount: new Map(), hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
     opened: 0, openDelayMs: 0, closed: 0, balanceCalls: 0,
   };
   const addrToMnemonic = new Map<string, string>();
@@ -47,6 +49,11 @@ export function makeFakeChain() {
       state.failOnce.delete(name);
       throw new Error(`lỗi giả lập ở ${name}`);
     }
+    const left = state.failCount.get(name) ?? 0;
+    if (left > 0) {
+      state.failCount.set(name, left - 1);
+      throw new Error(`lỗi giả lập ở ${name}`);
+    }
   };
 
   const chain: Chain = {
@@ -57,8 +64,10 @@ export function makeFakeChain() {
       const w: ChainWallet = {
         async balances(sync: boolean) {
           state.balanceCalls++;
-          if (sync) await maybeHang('balances');
-          else maybeFail('balancesFinal');
+          if (sync) {
+            await maybeHang('balances');
+            maybeFail('balances');
+          } else maybeFail('balancesFinal');
           return { night: state.night.get(mnemonic) ?? 0n, dust: state.dust.get(mnemonic) ?? 0n, synced: true };
         },
         async waitNight(min) {
