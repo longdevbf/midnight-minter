@@ -15,6 +15,16 @@ const TOKEN_UPDATABLE = new Set([
   'status', 'failedStep', 'message', 'contractAddress', 'tokenColor', 'deployTxId', 'mintTxId',
 ]);
 
+const WALLET_COLUMNS = new Set([
+  'id', 'label', 'kind', 'network', 'unshieldedAddress', 'encryptedMnemonic', 'status',
+  'failedStep', 'message', 'nightBalance', 'dustBalance', 'createdAt',
+]);
+const TOKEN_COLUMNS = new Set([
+  'id', 'walletId', 'name', 'symbol', 'decimals', 'amountWhole', 'baseUnits', 'imageUri',
+  'imageGatewayUrl', 'imageSha256', 'encryptedOwnerSecret', 'contractAddress', 'tokenColor',
+  'deployTxId', 'mintTxId', 'status', 'failedStep', 'message', 'createdAt',
+]);
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS wallets (
@@ -54,7 +64,10 @@ export interface Store {
   close(): void;
 }
 
-function insertRow(db: Database.Database, table: string, rec: object) {
+function insertRow(db: Database.Database, table: string, rec: object, allowed: Set<string>) {
+  for (const k of Object.keys(rec)) {
+    if (!allowed.has(k)) throw new Error(`Cột ${k} không hợp lệ`);
+  }
   const cols = Object.keys(rec).map(toSnake);
   const sql = `INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map((c) => `@${c}`).join(',')})`;
   db.prepare(sql).run(Object.fromEntries(Object.entries(rec).map(([k, v]) => [toSnake(k), v])));
@@ -65,12 +78,16 @@ function updateRow(db: Database.Database, table: string, id: string, patch: obje
   for (const [k] of entries) {
     if (!allowed.has(k)) throw new Error(`Cột ${k} không được phép cập nhật`);
   }
-  if (entries.length === 0) return;
+  if (entries.length === 0) {
+    if (!db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)) throw new Error(`Không tìm thấy bản ghi ${table} với id ${id}`);
+    return;
+  }
   const sets = entries.map(([k]) => `${toSnake(k)} = @${toSnake(k)}`).join(', ');
-  db.prepare(`UPDATE ${table} SET ${sets} WHERE id = @id`).run({
+  const result = db.prepare(`UPDATE ${table} SET ${sets} WHERE id = @id`).run({
     id,
     ...Object.fromEntries(entries.map(([k, v]) => [toSnake(k), v])),
   });
+  if (result.changes === 0) throw new Error(`Không tìm thấy bản ghi ${table} với id ${id}`);
 }
 
 export function openStore(path: string): Store {
@@ -89,7 +106,7 @@ export function openStore(path: string): Store {
     setMeta: (key, value) => {
       db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
     },
-    insertWallet: (w) => insertRow(db, 'wallets', w),
+    insertWallet: (w) => insertRow(db, 'wallets', w, WALLET_COLUMNS),
     getWallet: (id) => one<WalletRecord>('SELECT * FROM wallets WHERE id = ?', id),
     getTreasury: () => one<WalletRecord>("SELECT * FROM wallets WHERE kind = 'treasury' LIMIT 1"),
     listWallets: () => many<WalletRecord>('SELECT * FROM wallets ORDER BY created_at ASC, rowid ASC'),
@@ -99,7 +116,7 @@ export function openStore(path: string): Store {
     },
     listIncompleteWallets: () =>
       many<WalletRecord>("SELECT * FROM wallets WHERE status NOT IN ('ready','failed') ORDER BY created_at ASC"),
-    insertToken: (t) => insertRow(db, 'tokens', t),
+    insertToken: (t) => insertRow(db, 'tokens', t, TOKEN_COLUMNS),
     getToken: (id) => one<TokenRecord>('SELECT * FROM tokens WHERE id = ?', id),
     listTokens: (walletId) =>
       many<TokenRecord>('SELECT * FROM tokens WHERE wallet_id = ? ORDER BY created_at DESC, rowid DESC', walletId),

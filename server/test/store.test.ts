@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openStore, type Store } from '../src/db/store';
 import { toPublicToken, toPublicWallet, type TokenRecord, type WalletRecord } from '../src/types';
 
@@ -19,6 +19,7 @@ const token = (over: Partial<TokenRecord> = {}): TokenRecord => ({
 describe('store', () => {
   let store: Store;
   beforeEach(() => { store = openStore(':memory:'); });
+  afterEach(() => { store.close(); });
 
   it('meta: lưu và đọc', () => {
     expect(store.getMeta('salt')).toBeNull();
@@ -51,7 +52,7 @@ describe('store', () => {
 
   it('địa chỉ ví là duy nhất', () => {
     store.insertWallet(wallet({ id: 'a' }));
-    expect(() => store.insertWallet(wallet({ id: 'b' }))).toThrow();
+    expect(() => store.insertWallet(wallet({ id: 'b' }))).toThrow(/UNIQUE/);
   });
 
   it('token: thêm, cập nhật, đếm và liệt kê theo ví', () => {
@@ -76,6 +77,26 @@ describe('store', () => {
     store.insertToken(token({ id: 'd', status: 'done' }));
     store.insertToken(token({ id: 'f', status: 'failed' }));
     expect(store.listIncompleteTokens().map((t) => t.id).sort()).toEqual(['m', 'q']);
+  });
+
+  it('cập nhật id không tồn tại thì báo lỗi', () => {
+    expect(() => store.updateWallet('zzz', { status: 'ready' })).toThrow(/Không tìm thấy bản ghi/);
+    expect(() => store.updateToken('zzz', { status: 'done' })).toThrow(/Không tìm thấy bản ghi/);
+  });
+
+  it('updateToken từ chối cột không cho phép', () => {
+    store.insertWallet(wallet());
+    store.insertToken(token());
+    expect(() => store.updateToken('t1', { walletId: 'x' } as never)).toThrow(/không được phép/);
+    expect(store.getToken('t1')?.walletId).toBe('w1');
+  });
+
+  it('insert từ chối cột lạ và không ghi gì', () => {
+    expect(() => store.insertWallet({ ...wallet(), evil: 'x' } as never)).toThrow(/không hợp lệ/);
+    expect(store.listWallets()).toEqual([]);
+    store.insertWallet(wallet());
+    expect(() => store.insertToken({ ...token(), evil: 'x' } as never)).toThrow(/không hợp lệ/);
+    expect(store.countTokens('w1')).toBe(0);
   });
 
   it('bản public không chứa trường bí mật', () => {
