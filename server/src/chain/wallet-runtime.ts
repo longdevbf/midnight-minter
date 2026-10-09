@@ -52,7 +52,13 @@ export async function openWallet(network: NetworkConfig, keys: WalletKeys): Prom
     unshielded: (cfg) => UnshieldedWallet(cfg).startWithPublicKey(PublicKey.fromKeyStore(keys.unshieldedKeystore)),
     dust: (cfg) => DustWallet(cfg).startWithSecretKey(keys.dust, ledger.LedgerParameters.initialParameters().dust),
   });
-  await facade.start(keys.shielded, keys.dust);
+  try {
+    await facade.start(keys.shielded, keys.dust);
+  } catch (e) {
+    // start chạy các dịch vụ song song: một cái lỗi thì cái khác vẫn chạy (socket indexer...), phải dừng hết.
+    await facade.stop().catch(() => undefined);
+    throw e;
+  }
   return { facade, keys, network, close: () => facade.stop() };
 }
 
