@@ -12,6 +12,15 @@ export const realChain: Chain = {
     const psPassword = derivePrivateStatePassword(normalized);
     const w = await openWallet(network, keys);
     return {
+      restored: false,
+      snapshot: async () => {
+        const [shielded, unshielded, dust] = await Promise.all([
+          w.facade.shielded.serializeState(),
+          w.facade.unshielded.serializeState(),
+          w.facade.dust.serializeState(),
+        ]);
+        return { shielded, unshielded, dust };
+      },
       balances: (sync) => readBalances(w, sync),
       waitNight: (min, timeoutMs) => waitNight(w, min, timeoutMs),
       ensureDust: () => ensureDust(w),
