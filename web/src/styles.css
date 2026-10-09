@@ -134,3 +134,33 @@ label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color:
   .kv.wide { grid-template-columns: 110px minmax(0, 1fr); }
   .seed ol { columns: 2; }
 }
+
+/* Tab Mint token */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+@media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+.fieldwrap { display: flex; flex-direction: column; gap: 6px; }
+.fieldwrap > label { font-size: 13px; color: var(--muted); }
+.fieldwrap input[aria-invalid='true'], .plan input[aria-invalid='true'] { border-color: var(--bad); }
+.fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.fieldset legend { padding: 0; margin-bottom: 4px; font-size: 13px; color: var(--muted); }
+.check { flex-direction: row; align-items: center; gap: 10px; color: var(--text); padding: 6px 0; }
+.check input { width: auto; min-height: 0; }
+.wallets.pick { max-height: 260px; }
+.field-error { color: var(--bad); font-size: 12px; margin: 0; overflow-wrap: anywhere; }
+.ok-text { color: var(--ok); }
+.table-scroll { overflow-x: auto; }
+.plan { width: 100%; border-collapse: collapse; }
+.plan th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px 6px 0; }
+.plan th.plan-wallet { color: var(--text); font-weight: 600; vertical-align: top; padding-top: 11px; }
+.plan td { padding: 4px 8px 4px 0; vertical-align: top; }
+.plan input { min-width: 150px; }
+.progress td { padding-top: 8px; padding-bottom: 8px; }
+.tok-name { overflow-wrap: anywhere; }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.step { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.step.active { color: var(--busy); font-weight: 600; }
+.step.done { color: var(--ok); }
+.step.failed { color: var(--bad); font-weight: 600; }
+.status-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 150px; max-width: 320px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }

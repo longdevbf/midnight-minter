@@ -18,6 +18,8 @@ export function App() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('wallets');
   const [error, setError] = useState<string | null>(null);
+  /** Tăng mỗi lần server báo thay đổi; MintPanel dùng để làm mới bảng tiến trình. */
+  const [liveTick, setLiveTick] = useState(0);
   /** Đếm request chi tiết: chỉ request mới nhất của lựa chọn hiện tại được phép ghi state. */
   const detailSeq = useRef(0);
   const detailRef = useRef(detail);
@@ -70,7 +72,7 @@ export function App() {
   useEffect(() => { void loadStatus(); }, [loadStatus]);
   useEffect(() => { if (unlocked) void loadWallets(); }, [unlocked, loadWallets]);
   useEffect(() => { loadDetail(); }, [loadDetail]);
-  useLive(unlocked, () => { void loadWallets(); loadDetail(); });
+  useLive(unlocked, () => { void loadWallets(); loadDetail(); setLiveTick((t) => t + 1); });
 
   // 401: có thể do server khởi động lại nên phiên bị khóa. Hỏi lại trạng thái; nếu đã khóa thì về màn hình mở khóa.
   useEffect(() => {
@@ -135,7 +137,7 @@ export function App() {
           />
         </aside>
         <main className="main">
-          {tab === 'wallets' ? (
+          {tab === 'wallets' && (
             <WalletDetail
               key={selectedId ?? 'none'}
               data={detail && detail.wallet.id === selectedId ? detail : null}
@@ -146,13 +148,16 @@ export function App() {
               onChanged={() => { void loadWallets(); loadDetail(); }}
               onError={setError}
             />
-          ) : (
+          )}
+          {/* Luôn gắn sẵn (chỉ ẩn khi ở tab khác) để form và bảng tiến trình không mất khi đổi tab. */}
+          <div hidden={tab !== 'mint'}>
             <MintPanel
               wallets={children}
               onMinted={() => { void loadWallets(); loadDetail(); }}
               onError={setError}
+              liveTick={liveTick}
             />
-          )}
+          </div>
         </main>
       </div>
     </div>
