@@ -1,0 +1,49 @@
+pragma language_version >= 0.20;
+
+import CompactStandardLibrary;
+
+export ledger owner: Bytes<32>;
+export ledger token_color: Bytes<32>;
+export ledger minted: Boolean;
+export ledger token_name: Opaque<"string">;
+export ledger token_symbol: Opaque<"string">;
+export ledger token_decimals: Uint<8>;
+export ledger image_uri: Opaque<"string">;
+export ledger image_sha256: Bytes<32>;
+export ledger minted_amount: Uint<64>;
+
+constructor(
+  ownerSecret: Bytes<32>,
+  name: Opaque<"string">,
+  symbol: Opaque<"string">,
+  decimals: Uint<8>,
+  imageUri: Opaque<"string">,
+  imageSha256: Bytes<32>
+) {
+  owner = disclose(deriveOwnerKey(ownerSecret));
+  token_name = disclose(name);
+  token_symbol = disclose(symbol);
+  token_decimals = disclose(decimals);
+  image_uri = disclose(imageUri);
+  image_sha256 = disclose(imageSha256);
+  minted = false;
+  minted_amount = 0;
+}
+
+export circuit deriveOwnerKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "minter:owner:v1"), sk]);
+}
+
+export circuit mint(sk: Bytes<32>, amount: Uint<64>, recipient: UserAddress): [] {
+  assert(owner == deriveOwnerKey(sk), "not authorized to mint");
+  assert(!minted, "already minted");
+  assert(amount > 0, "amount must be positive");
+  const color = mintUnshieldedToken(
+    pad(32, "minter:token:v1"),
+    disclose(amount),
+    right<ContractAddress, UserAddress>(disclose(recipient))
+  );
+  token_color = color;
+  minted_amount = disclose(amount);
+  minted = true;
+}
