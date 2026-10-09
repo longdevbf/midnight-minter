@@ -12,6 +12,8 @@ export interface FakeState {
   failOnce: Set<string>;
   /** tên thao tác ("ensureDust" | "transfer" | "transferAfter" (treo sau khi đã trừ tiền) | "deploy" | "mint" | "balances" (chỉ khi sync=true)) sẽ treo mãi, như khi chờ finalization không bao giờ tới */
   hang: Set<string>;
+  /** tên thao tác → số ms chờ trước khi chạy tiếp (vd. "ensureDust" chậm nhưng vẫn xong) */
+  delayMs: Map<string, number>;
   /** true: transferNight trừ tiền người gửi ngay nhưng hoãn cộng cho người nhận tới khi gọi releaseCredits() */
   holdCredit: boolean;
   pendingCredits: Array<{ to: string; amount: bigint }>;
@@ -26,13 +28,15 @@ export interface FakeState {
  */
 export function makeFakeChain() {
   const state: FakeState = {
-    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), hang: new Set(), holdCredit: false, pendingCredits: [],
+    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
     opened: 0, closed: 0, balanceCalls: 0,
   };
   const addrToMnemonic = new Map<string, string>();
   let seq = 0;
 
   const maybeHang = async (name: string) => {
+    const delay = state.delayMs.get(name);
+    if (delay) await new Promise((r) => setTimeout(r, delay));
     if (state.hang.has(name)) await new Promise<never>(() => undefined);
   };
 

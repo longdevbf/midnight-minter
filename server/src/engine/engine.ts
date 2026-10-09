@@ -21,6 +21,11 @@ export interface EngineDeps {
   chainCallTimeoutMs?: number;
   /** Tối đa chờ khi mở ví và đồng bộ số dư (balances(true)). Mặc định 60 phút. */
   syncTimeoutMs?: number;
+  /**
+   * Tối đa chờ riêng cho bước đăng ký/chờ DUST (ensureDust bên trong có thể chờ DUST sinh ra 20 phút rồi chờ
+   * số dư DUST thêm 20 phút). Mặc định 45 phút. Quá hạn thì ví bị đóng như các lệnh gọi chuỗi khác.
+   */
+  dustTimeoutMs?: number;
 }
 
 type WalletStep = 'funding' | 'syncing' | 'dust_pending';
@@ -34,6 +39,7 @@ const night = (v: bigint) => `${formatUnits(v, NIGHT_DECIMALS)} tNIGHT`;
 
 const DEFAULT_CHAIN_CALL_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_SYNC_TIMEOUT_MS = 60 * 60_000;
+const DEFAULT_DUST_TIMEOUT_MS = 45 * 60_000;
 /** Giới hạn của setTimeout: lớn hơn thì Node bắn sau 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULT_TIMEOUT_HINT = 'Bấm Thử lại để tiếp tục.';
@@ -256,7 +262,7 @@ export class Engine {
       this.saveBalances(w.id, await this.syncBalances(w.id, cw));
       return 'ok';
     }
-    await this.guarded(w.id, 'Đăng ký DUST', cw.ensureDust());
+    await this.guarded(w.id, 'Đăng ký DUST', cw.ensureDust(), { ms: this.d.dustTimeoutMs ?? DEFAULT_DUST_TIMEOUT_MS });
     this.saveBalances(w.id, await this.syncBalances(w.id, cw));
     return 'ok';
   }

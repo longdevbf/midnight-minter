@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Engine } from '../src/engine/engine';
+import { Engine, type EngineDeps } from '../src/engine/engine';
 import { openStore, type Store } from '../src/db/store';
 import { createVault, makeSalt } from '../src/lib/vault';
 import { getNetworkConfig } from '../src/config/networks';
@@ -10,7 +10,9 @@ import type { TokenRecord } from '../src/types';
 const FUND = 100_000_000n;
 const network = getNetworkConfig('preview', {});
 
-function setup(opts: { chainCallTimeoutMs?: number; syncTimeoutMs?: number } = {}) {
+type SetupOpts = Partial<Omit<EngineDeps, 'store' | 'vault' | 'chain' | 'network' | 'bus' | 'fundAmount'>>;
+
+function setup(opts: SetupOpts = {}) {
   const store = openStore(':memory:');
   const vault = createVault('mat-khau-chu-123', makeSalt());
   const fake = makeFakeChain();
@@ -267,7 +269,7 @@ describe('Engine — mint', () => {
 
 describe('Engine — quá thời gian chờ chuỗi', () => {
   it('ensureDust treo: ví failed(dust_pending) có thông báo quá thời gian, đóng ví cũ, thử lại thành công', async () => {
-    const ctx = setup({ chainCallTimeoutMs: 30 });
+    const ctx = setup({ chainCallTimeoutMs: 30, dustTimeoutMs: 30 });
     await readyTreasury(ctx);
     ctx.fake.state.hang.add('ensureDust');
     const [c] = await ctx.engine.createWallets(1, 'child');
@@ -596,5 +598,34 @@ describe('Engine — ví con không mở khi ví tổng chưa sẵn sàng (F2)',
     ctx.engine.pollWaiting();
     await ctx.engine.idle();
     expect(ctx.fake.state.balanceCalls - before).toBe(1); // ví tổng được đọc lại số dư
+  });
+});
+
+describe('Engine — thời gian chờ riêng cho bước DUST (F3)', () => {
+  it('ensureDust chậm hơn chainCallTimeoutMs nhưng trong dustTimeoutMs: ready, không đóng ví', async () => {
+    const ctx = setup({ chainCallTimeoutMs: 30, dustTimeoutMs: 500 });
+    await readyTreasury(ctx);
+    ctx.fake.state.delayMs.set('ensureDust', 100);
+    const closedBefore = ctx.fake.state.closed;
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const w = ctx.store.getWallet(c.id)!;
+    expect(w.message).toBeNull();
+    expect(w.status).toBe('ready');
+    expect(ctx.fake.state.closed).toBe(closedBefore);
+  });
+
+  it('ensureDust treo quá dustTimeoutMs: failed(dust_pending) quá thời gian chờ, ví bị đóng', async () => {
+    const ctx = setup({ chainCallTimeoutMs: 10_000, dustTimeoutMs: 40 });
+    await readyTreasury(ctx);
+    ctx.fake.state.hang.add('ensureDust');
+    const closedBefore = ctx.fake.state.closed;
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const w = ctx.store.getWallet(c.id)!;
+    expect(w.status).toBe('failed');
+    expect(w.failedStep).toBe('dust_pending');
+    expect(w.message).toMatch(/quá thời gian chờ/);
+    expect(ctx.fake.state.closed).toBeGreaterThan(closedBefore);
   });
 });
