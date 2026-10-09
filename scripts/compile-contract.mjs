@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const COMPILER = '0.31.1';
@@ -14,6 +14,9 @@ function run(cmd, args) {
     process.exit(r.status ?? 1);
   }
 }
+
+// Xoá bản build cũ trước khi biên dịch: nếu biên dịch lỗi thì không còn artifact cũ lọt qua.
+rmSync(dest, { recursive: true, force: true });
 
 if (process.platform === 'win32') {
   // `compact` trên Windows là công cụ nén NTFS, không phải compiler. Phải chạy trong WSL.
@@ -36,4 +39,10 @@ if (!existsSync(resolve(dest, 'contract/index.js'))) {
   console.error('Không thấy managed/token/contract/index.js sau khi biên dịch.');
   process.exit(1);
 }
+
+// Sourcemap trỏ tới file nguồn không có trong managed/, làm vitest cảnh báo mỗi lần chạy. Bỏ đi.
+const entryJs = resolve(dest, 'contract/index.js');
+rmSync(resolve(dest, 'contract/index.js.map'), { force: true });
+writeFileSync(entryJs, readFileSync(entryJs, 'utf8').replace(/^\/\/# sourceMappingURL=.*(\r?\n)?/gm, ''));
+
 console.log(`\nĐã biên dịch contract vào ${dest}`);
