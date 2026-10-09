@@ -24,7 +24,7 @@ describe('API — retry/refresh trả { ok, queued } (F12)', () => {
     store = openStore(':memory:');
     const session = createSession(store, (vault, bus) => {
       // chainCallTimeoutMs nhỏ: lệnh treo cuối test tự hết hạn để afterEach không bị kẹt.
-      engine = new Engine({ store, vault, chain: fake.chain, network, bus, fundAmount: 100_000_000n, waitFundMs: 10, chainCallTimeoutMs: 400 });
+      engine = new Engine({ store, vault, chain: fake.chain, network, bus, fundAmount: 100_000_000n, waitFundMs: 10, chainCallTimeoutMs: 400, dustTimeoutMs: 400 });
       return engine;
     });
     decrypt = (b) => session.vault!.decrypt(b);

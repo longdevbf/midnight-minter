@@ -20,8 +20,16 @@ const network = getNetworkConfig(env.network, {
 const store = openStore(resolve(env.dataDir, 'minter.db'));
 const session = createSession(
   store,
-  // TODO(merge): pass redact: redact (EngineDeps.redact do nhánh Engine thêm vào)
-  (vault, bus) => new Engine({ store, vault, chain: realChain, network, bus, fundAmount: env.fundAmount }),
+  (vault, bus) => new Engine({
+      store,
+      vault,
+      chain: realChain,
+      network,
+      bus,
+      fundAmount: env.fundAmount,
+      maxOpenWallets: env.maxOpenWallets,
+      redact,
+    }),
 );
 const app = await buildApp({
   store,
