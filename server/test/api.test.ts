@@ -103,6 +103,14 @@ describe('API', () => {
     await app2.close();
   });
 
+  it('mở khóa lại khi đã mở khóa vẫn phải đúng mật khẩu (F10)', async () => {
+    expect((await unlock()).statusCode).toBe(200);
+    const bad = await app.inject({ method: 'POST', url: '/api/unlock', payload: { password: 'sai-mat-khau-1' } });
+    expect(bad.statusCode).toBe(401);
+    expect(bad.json().error).toBe('Sai mật khẩu chủ');
+    expect((await unlock()).statusCode).toBe(200);
+  });
+
   it('mật khẩu quá ngắn bị từ chối', async () => {
     const r = await app.inject({ method: 'POST', url: '/api/unlock', payload: { password: 'ngan' } });
     expect(r.statusCode).toBe(400);

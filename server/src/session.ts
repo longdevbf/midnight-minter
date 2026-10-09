@@ -36,13 +36,27 @@ export function createSession(
   let engine: Engine | null = null;
   let timer: NodeJS.Timeout | null = null;
 
+  function verifyPassword(password: string): boolean {
+    const saltHex = store.getMeta('vault_salt');
+    if (!saltHex) return false;
+    try {
+      return createVault(password, Buffer.from(saltHex, 'hex')).decrypt(store.getMeta('vault_check') as string) === VERIFIER_PLAIN;
+    } catch {
+      return false;
+    }
+  }
+
   return {
     bus,
     get vault() { return vault; },
     get engine() { return engine; },
     initialized: () => store.getMeta('vault_salt') !== null,
     unlock(password) {
-      if (vault) return;
+      if (vault) {
+        // Đã mở khóa: vẫn phải đúng mật khẩu, nếu không "mở khóa" thành lối vòng kiểm tra mật khẩu.
+        if (!verifyPassword(password)) throw new Error('Sai mật khẩu chủ');
+        return;
+      }
       const saltHex = store.getMeta('vault_salt');
       let v: Vault;
       if (!saltHex) {
@@ -63,15 +77,7 @@ export function createSession(
       timer = setInterval(() => e.pollWaiting(), POLL_INTERVAL_MS);
       timer.unref();
     },
-    verifyPassword(password) {
-      const saltHex = store.getMeta('vault_salt');
-      if (!saltHex) return false;
-      try {
-        return createVault(password, Buffer.from(saltHex, 'hex')).decrypt(store.getMeta('vault_check') as string) === VERIFIER_PLAIN;
-      } catch {
-        return false;
-      }
-    },
+    verifyPassword,
     async close() {
       if (timer) {
         clearInterval(timer);
