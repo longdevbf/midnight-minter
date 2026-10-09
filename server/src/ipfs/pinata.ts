@@ -11,6 +11,15 @@ export interface Ipfs {
 export function createIpfs(opts: { jwt: string; gateway: string; fetchImpl?: typeof fetch }): Ipfs {
   const doFetch = opts.fetchImpl ?? fetch;
   const gateway = opts.gateway.endsWith('/') ? opts.gateway : `${opts.gateway}/`;
+
+  const isTimeoutError = (err: unknown): err is Error & { name: string } => {
+    return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+  };
+
+  const maskSecrets = (text: string): string => {
+    return text.split(opts.jwt).join('***').split(`Bearer ${opts.jwt}`).join('Bearer ***');
+  };
+
   return {
     async pinImage(buf, filename, mime) {
       const form = new FormData();
@@ -24,16 +33,36 @@ export function createIpfs(opts: { jwt: string; gateway: string; fetchImpl?: typ
           body: form,
           signal: AbortSignal.timeout(60_000),
         });
-      } catch {
+      } catch (err) {
+        if (isTimeoutError(err)) {
+          throw new Error('Pinata không phản hồi sau 60 giây, hãy thử lại');
+        }
         throw new Error('Không kết nối được Pinata (kiểm tra mạng hoặc thử lại)');
       }
       if (!res.ok) {
-        const body = (await res.text()).slice(0, 200);
-        throw new Error(`Pinata từ chối upload ảnh (HTTP ${res.status}): ${body}`);
+        let body = '';
+        try {
+          body = (await res.text()).slice(0, 200);
+        } catch {
+          // If reading body fails, just use empty body but still throw
+        }
+        const maskedBody = maskSecrets(body);
+        throw new Error(`Pinata từ chối upload ảnh (HTTP ${res.status}): ${maskedBody}`);
       }
-      const json = (await res.json()) as { IpfsHash?: string };
-      if (!json.IpfsHash) throw new Error('Phản hồi Pinata không có IpfsHash');
-      return { cid: json.IpfsHash, uri: `ipfs://${json.IpfsHash}`, gatewayUrl: `${gateway}${json.IpfsHash}` };
+      let json: unknown;
+      try {
+        json = await res.json();
+      } catch (err) {
+        if (isTimeoutError(err)) {
+          throw new Error('Pinata không phản hồi sau 60 giây, hãy thử lại');
+        }
+        throw new Error('Phản hồi Pinata không hợp lệ (không phải JSON)');
+      }
+      const parsed = json as { IpfsHash?: unknown };
+      if (typeof parsed.IpfsHash !== 'string') {
+        throw new Error('Phản hồi Pinata không có IpfsHash (hoặc không phải string)');
+      }
+      return { cid: parsed.IpfsHash, uri: `ipfs://${parsed.IpfsHash}`, gatewayUrl: `${gateway}${parsed.IpfsHash}` };
     },
   };
 }
