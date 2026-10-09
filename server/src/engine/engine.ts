@@ -130,10 +130,16 @@ export class Engine {
     for (const t of this.d.store.listIncompleteTokens()) this.queue.enqueue({ type: 'token', id: t.id });
   }
 
-  /** Gọi định kỳ: ví đang chờ (faucet / ví tổng) được kiểm tra lại. */
+  /**
+   * Gọi định kỳ: ví đang chờ (faucet / ví tổng) được kiểm tra lại. Ví tổng đang funding luôn được kiểm tra;
+   * ví con funding chỉ được đưa vào hàng khi ví tổng đã ready (nếu không, mở và đồng bộ ví con là vô ích
+   * và làm nghẽn hàng đợi, ví tổng không kịp phát hiện tNIGHT từ faucet).
+   */
   pollWaiting() {
+    const treasuryReady = this.d.store.getTreasury()?.status === 'ready';
     for (const w of this.d.store.listWallets()) {
-      if (w.status === 'funding' && w.failedStep === null) this.queue.enqueue({ type: 'wallet', id: w.id });
+      if (w.status !== 'funding' || w.failedStep !== null) continue;
+      if (w.kind === 'treasury' || treasuryReady) this.queue.enqueue({ type: 'wallet', id: w.id });
     }
   }
 
@@ -239,6 +245,8 @@ export class Engine {
       /* số dư sẽ được cập nhật ở lần làm mới sau */
     }
     this.patchWallet(id, { status: 'ready', failedStep: null, message: null });
+    // Ví tổng vừa sẵn sàng: ví con đang chờ được chạy tiếp ngay, không đợi lượt pollWaiting kế tiếp.
+    if (w.kind === 'treasury') this.pollWaiting();
   }
 
   private async runStep(step: WalletStep, w: WalletRecord): Promise<'ok' | 'wait'> {
@@ -254,11 +262,10 @@ export class Engine {
   }
 
   private async stepFunding(w: WalletRecord): Promise<'ok' | 'wait'> {
-    const cw = await this.getOpen(w);
-    const mine = await this.syncBalances(w.id, cw);
-    this.saveBalances(w.id, mine);
-
     if (w.kind === 'treasury') {
+      const cw = await this.getOpen(w);
+      const mine = await this.syncBalances(w.id, cw);
+      this.saveBalances(w.id, mine);
       if (mine.night > 0n) return 'ok';
       this.patchWallet(w.id, {
         message: `Chờ tNIGHT từ faucet. Xin tại ${this.d.network.faucetUrl} cho địa chỉ ${w.unshieldedAddress}`,
@@ -266,16 +273,22 @@ export class Engine {
       return 'wait';
     }
 
+    // Kiểm tra ví tổng (theo status đã lưu, không gọi chuỗi) TRƯỚC khi mở ví con: mở + đồng bộ lần đầu tốn
+    // khoảng 20 phút, vô ích khi ví tổng chưa thể cấp tiền.
+    const treasury = this.d.store.getTreasury();
+    if (!treasury || treasury.status !== 'ready') {
+      this.patchWallet(w.id, { message: 'Chờ ví tổng sẵn sàng (cần có tNIGHT và DUST) để cấp tNIGHT cho ví này' });
+      return 'wait';
+    }
+
+    const cw = await this.getOpen(w);
+    const mine = await this.syncBalances(w.id, cw);
+    this.saveBalances(w.id, mine);
     const fund = this.d.fundAmount;
     const waitMs = this.d.waitFundMs ?? 10 * 60_000;
     if (mine.night >= fund) {
       this.clearFundingMarker(w.id);
       return 'ok';
-    }
-    const treasury = this.d.store.getTreasury();
-    if (!treasury || treasury.status !== 'ready') {
-      this.patchWallet(w.id, { message: 'Chờ ví tổng sẵn sàng (cần có tNIGHT và DUST) để cấp tNIGHT cho ví này' });
-      return 'wait';
     }
     const tw = await this.getOpen(treasury);
     const tb = await this.syncBalances(treasury.id, tw);

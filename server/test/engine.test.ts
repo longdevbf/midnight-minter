@@ -559,3 +559,42 @@ describe('Engine — token: sửa lỗi nhỏ', () => {
     expect(c2.store.getToken('tok1')!.message).toMatch(/Kiểm tra ví trước khi bấm Thử lại/);
   });
 });
+
+// ------------------------------------------------------------------ vòng sửa cuối
+
+describe('Engine — ví con không mở khi ví tổng chưa sẵn sàng (F2)', () => {
+  it('ví con chờ ví tổng mà không mở/đồng bộ; pollWaiting không mở lại; ví tổng có tiền thì ví con chạy tới ready', async () => {
+    const ctx = setup();
+    const [t] = await ctx.engine.createWallets(1, 'treasury');
+    const children = await ctx.engine.createWallets(4, 'child');
+    await ctx.engine.idle();
+    expect(ctx.fake.state.opened).toBe(1); // chỉ ví tổng
+    for (const c of children) {
+      const w = ctx.store.getWallet(c.id)!;
+      expect(w.status).toBe('funding');
+      expect(w.message).toMatch(/Chờ ví tổng sẵn sàng/);
+    }
+
+    ctx.engine.pollWaiting();
+    await ctx.engine.idle();
+    ctx.engine.pollWaiting();
+    await ctx.engine.idle();
+    expect(ctx.fake.state.opened).toBe(1);
+
+    ctx.fake.state.night.set(mnemonicOf(ctx, t.id), 1_000_000_000n);
+    ctx.engine.retryWallet(t.id);
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(t.id)!.status).toBe('ready');
+    for (const c of children) expect(ctx.store.getWallet(c.id)!.status).toBe('ready');
+  });
+
+  it('pollWaiting: luôn kiểm tra lại ví tổng đang funding, chỉ đưa ví con funding vào hàng khi ví tổng ready', async () => {
+    const ctx = setup();
+    await ctx.engine.createWallets(1, 'treasury');
+    await ctx.engine.idle();
+    const before = ctx.fake.state.balanceCalls;
+    ctx.engine.pollWaiting();
+    await ctx.engine.idle();
+    expect(ctx.fake.state.balanceCalls - before).toBe(1); // ví tổng được đọc lại số dư
+  });
+});
