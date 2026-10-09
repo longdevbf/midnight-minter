@@ -26,6 +26,14 @@ const candidate = (secret: string, n: number) =>
 
 const fakeSecret = () => Array.from({ length: 24 }, () => randomUUID().slice(0, 8)).join(' ');
 
+/**
+ * Secret CỐ ĐỊNH cho các test ép lỗi: ứng viên 0..3 và 999 của mỗi secret đã được kiểm (một lần, bằng
+ * validatePassword thật) là hợp lệ. Secret ngẫu nhiên có ~1,1% ứng viên bị validator thật từ chối, làm
+ * các khẳng định "đúng ứng viên n" chập chờn.
+ */
+const FIXED = ['fixed test secret 0', 'fixed test secret 1', 'fixed test secret 2', 'fixed test secret 3'] as const;
+const CHECKED_COUNTERS = [0, 1, 2, 3, 999];
+
 describe('derivePrivateStatePassword', () => {
   beforeEach(() => {
     forced.failNext = 0;
@@ -52,13 +60,17 @@ describe('derivePrivateStatePassword', () => {
     expect(derivePrivateStatePassword(s)).not.toContain(s.slice(0, 8));
   });
 
+  it('các secret cố định có ứng viên 0..3 và 999 hợp lệ với validatePassword thật', () => {
+    for (const s of FIXED) for (const n of CHECKED_COUNTERS) expect(() => validatePassword(candidate(s, n))).not.toThrow();
+  });
+
   it('dùng ứng viên bộ đếm 0 khi hợp lệ', () => {
-    const s = fakeSecret();
+    const s = FIXED[0];
     expect(derivePrivateStatePassword(s)).toBe(candidate(s, 0));
   });
 
   it('ép validatePassword lỗi: thử lại với bộ đếm kế tiếp', () => {
-    const s = fakeSecret();
+    const s = FIXED[1];
     forced.failNext = 2;
     const p = derivePrivateStatePassword(s);
     expect(p).not.toBe(candidate(s, 0));
@@ -74,8 +86,8 @@ describe('derivePrivateStatePassword', () => {
   it('bỏ cuộc đúng sau 1000 lần gọi validatePassword', () => {
     forced.failNext = 999;
     // lần thứ 1000 (n = 999) hợp lệ thì vẫn thành công
-    expect(() => derivePrivateStatePassword(fakeSecret())).not.toThrow();
+    expect(derivePrivateStatePassword(FIXED[2])).toBe(candidate(FIXED[2], 999));
     forced.failNext = 1000;
-    expect(() => derivePrivateStatePassword(fakeSecret())).toThrow(/Không tạo được mật khẩu/);
+    expect(() => derivePrivateStatePassword(FIXED[3])).toThrow(/Không tạo được mật khẩu/);
   });
 });
