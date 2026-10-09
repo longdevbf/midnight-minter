@@ -57,7 +57,8 @@ const DEFAULT_DUST_TIMEOUT_MS = 45 * 60_000;
 /** Giới hạn của setTimeout: lớn hơn thì Node bắn sau 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULT_TIMEOUT_HINT = 'Bấm Thử lại để tiếp tục.';
-const DEPLOY_TIMEOUT_HINT = 'Kiểm tra ví trước khi bấm Thử lại vì giao dịch có thể vẫn được xác nhận.';
+const DEPLOY_TIMEOUT_HINT =
+  'Giao dịch deploy có thể vẫn được xác nhận và tốn DUST; bấm Thử lại sẽ deploy một contract mới.';
 
 const DEFAULT_AUTO_RETRY_DELAY_MS = 60_000;
 /** Số lần tự thử lại tối đa cho lỗi tạm ở bước syncing/dust_pending (Ruling 25). */

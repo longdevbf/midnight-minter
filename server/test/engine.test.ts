@@ -568,7 +568,7 @@ describe('Engine — token: sửa lỗi nhỏ', () => {
     expect(ctx.store.getToken('b')!.failedStep).toBe('deploying');
   });
 
-  it('thông báo timeout của deploy nhắc kiểm tra ví trước khi thử lại', async () => {
+  it('thông báo timeout của deploy nói rõ giao dịch có thể vẫn xác nhận và Thử lại sẽ deploy contract mới (F11)', async () => {
     const c2 = setup({ chainCallTimeoutMs: 30 });
     await readyTreasury(c2);
     const [w] = await c2.engine.createWallets(1, 'child');
@@ -577,7 +577,9 @@ describe('Engine — token: sửa lỗi nhỏ', () => {
     c2.fake.state.hang.add('deploy');
     c2.engine.enqueueToken('tok1');
     await c2.engine.idle();
-    expect(c2.store.getToken('tok1')!.message).toMatch(/Kiểm tra ví trước khi bấm Thử lại/);
+    expect(c2.store.getToken('tok1')!.message).toContain(
+      'Giao dịch deploy có thể vẫn được xác nhận và tốn DUST; bấm Thử lại sẽ deploy một contract mới.',
+    );
   });
 });
 
