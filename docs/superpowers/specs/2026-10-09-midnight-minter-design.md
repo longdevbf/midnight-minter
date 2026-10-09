@@ -13,7 +13,7 @@ Một app **chạy local** trên máy anh để:
 
 Mục đích sử dụng: mint token để bán trên các sàn khác, nên token là **unshielded** (số dư công khai, sàn đọc được).
 
-**Mạng:** preprod (mặc định). Nếu preprod lỗi nhiều thì đổi `NETWORK=preview`, không sửa code.
+**Mạng:** mặc định trong code là preprod, nhưng **mạng dùng được hiện nay là preview** (`NETWORK=preview`, không sửa code). Đo thật: đồng bộ ví preprod chạy 40 phút rồi lỗi `Wallet.Sync` (khoảng 1,5 triệu event), lặp lại nhiều lần nên preprod tạm thời không dùng được. Trên preview mỗi ví mới cần khoảng 17–20 phút đồng bộ ban đầu (~263.000 event, ~220–250 event/giây), chạy tuần tự nên N ví mất cỡ N × 20 phút.
 
 **Ngoài phạm vi (YAGNI):** bán/giao dịch token trên sàn, chuyển token giữa các ví, shielded token, mainnet (mainnet cần NIGHT thật và đăng ký DUST qua Cardano, mất khoảng 12 giờ), đăng nhập nhiều người dùng.
 
@@ -71,7 +71,7 @@ Trạng thái ví lưu trong DB, mỗi bước chạy lại độc lập đượ
 - Anh xin faucet bằng tay vào địa chỉ ví tổng (app hiển thị địa chỉ, nút sao chép và liên kết mở trang faucet); mỗi lần được 1000 tNIGHT. App tự phát hiện tiền về.
 - Từ đó, mọi ví con được cấp tNIGHT tự động bằng giao dịch chuyển từ ví tổng. 1000 tNIGHT đủ cho khoảng 10 ví con ở mức 100 tNIGHT mỗi ví; cần thêm thì xin faucet lần nữa.
 - Ví tổng cũng đăng ký DUST như ví thường để trả phí chuyển.
-3. **syncing:** chờ ví sync. Preprod có thể rất chậm (cold sync có hàng triệu event DUST); nếu SDK treo thì dùng bước bootstrap riêng hoặc chuyển preview.
+3. **syncing:** chờ ví sync. Preprod hiện không đồng bộ nổi (lỗi `Wallet.Sync` sau ~40 phút), nên dùng preview; ở đó mỗi ví mới mất ~20 phút. Bước bootstrap riêng chưa làm.
 4. **dust_pending:** chờ DUST sinh đủ để trả phí đăng ký, rồi `registerNightUtxosForDustGeneration` → `finalizeRecipe` → `submitTransaction`, chờ DUST > 0.
 5. **ready.**
 
@@ -94,7 +94,7 @@ Ngôn ngữ: Compact (pragma 0.23, theo bản tutorial token unshielded), biên 
 - `mintUnshieldedToken(domain, amount, recipient)` với recipient là địa chỉ unshielded của ví;
 - ghi `token_color`, đặt `minted = true`.
 
-**Domain separator:** nhãn cố định kèm symbol. Màu token khác nhau giữa các ví vì địa chỉ contract khác nhau.
+**Domain separator:** nhãn cố định `minter:token:v1` (không kèm symbol). Tính duy nhất của màu token đến từ địa chỉ contract: mỗi ví một contract nên màu token khác nhau.
 
 **Metadata:** toàn bộ field (name, symbol, decimals, image URI, SHA-256 ảnh, số lượng đã mint, màu token) nằm trong ledger công khai của contract; giao diện đọc trực tiếp từ đó. **Phát event theo chuẩn MIP-0018** (để indexer/sàn tự đọc, mỗi giá trị tối đa 219 byte) **để làm sau**: chuẩn còn là bản nháp và em chưa đọc được API module tham chiếu (repo `midnight-experiments/mip-0018`), nên không đưa vào bản đầu để khỏi code theo phỏng đoán.
 
@@ -144,7 +144,7 @@ Ví không đủ DUST thì bị chặn trước khi chạy, kèm lý do.
 
 | Rủi ro | Cách xử lý |
 |---|---|
-| Sync ví preprod rất chậm hoặc treo | Bước bootstrap riêng; không được thì `NETWORK=preview` |
+| Sync ví preprod lỗi `Wallet.Sync` sau ~40 phút (đã đo) | Dùng `NETWORK=preview`. Chi phí còn lại: ~20 phút đồng bộ mỗi ví mới, và ví bị đóng/khởi động lại app phải đồng bộ lại (lưu state ví để tránh việc này mới là kế hoạch, chưa có) |
 | Faucet có captcha và giới hạn tần suất | Không tự động hóa faucet; xin tay một lần cho ví tổng rồi app chia cho ví con |
 | Phiên bản SDK lệch nhau | Đã ghim bộ cài thử được (mục 2); khóa bằng `package-lock.json` |
 | Sàn khác không hiển thị đủ field | Ngoài tầm kiểm soát; metadata vẫn nằm trên chuỗi theo MIP-0018 |
