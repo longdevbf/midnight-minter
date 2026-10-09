@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type { PublicToken } from '../../../server/src/types';
 import { formatUnits } from '../../../shared/units';
 import { api } from '../api';
+import { queuedInfo } from '../lib/queued';
 import { mintTxField, producedField, requiredField, type FieldState } from '../lib/tokenFields';
 import { CopyButton } from './CopyButton';
 import { StatusBadge } from './StatusBadge';
@@ -44,9 +45,13 @@ function TokenImage({ src, name, symbol }: { src: string; name: string; symbol: 
   );
 }
 
-export function TokenCard({ token, onChanged, onError }: { token: PublicToken; onChanged: () => void; onError?: (m: string) => void }) {
+export function TokenCard({ token, onChanged, onError, onInfo }: { token: PublicToken; onChanged: () => void; onError?: (m: string) => void; onInfo?: (m: string) => void }) {
   async function retry() {
-    try { await api.retryToken(token.id); onChanged(); }
+    try {
+      const info = queuedInfo(await api.retryToken(token.id));
+      if (info) onInfo?.(info);
+      onChanged();
+    }
     catch (e) { onError?.(e instanceof Error ? e.message : String(e)); }
   }
 

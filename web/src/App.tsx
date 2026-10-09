@@ -18,6 +18,8 @@ export function App() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('wallets');
   const [error, setError] = useState<string | null>(null);
+  /** Thông báo không phải lỗi (ví dụ: việc đang chạy nên lệnh thử lại bị bỏ qua). */
+  const [info, setInfo] = useState<string | null>(null);
   /** Tăng mỗi lần server báo thay đổi; MintPanel dùng để làm mới bảng tiến trình. */
   const [liveTick, setLiveTick] = useState(0);
   /** Đếm request chi tiết: chỉ request mới nhất của lựa chọn hiện tại được phép ghi state. */
@@ -118,6 +120,13 @@ export function App() {
         </div>
       )}
 
+      {info && (
+        <div className="banner info" role="status">
+          <span>{info}</span>
+          <button className="btn tiny" onClick={() => setInfo(null)}>Đóng</button>
+        </div>
+      )}
+
       <div className="body">
         <aside className="side" aria-label="Ví tổng và ví con">
           <TreasuryCard
@@ -147,6 +156,7 @@ export function App() {
               faucetUrl={status.faucetUrl}
               onChanged={() => { void loadWallets(); loadDetail(); }}
               onError={setError}
+              onInfo={setInfo}
             />
           )}
           {/* Luôn gắn sẵn (chỉ ẩn khi ở tab khác) để form và bảng tiến trình không mất khi đổi tab. */}
@@ -155,6 +165,7 @@ export function App() {
               wallets={children}
               onMinted={() => { void loadWallets(); loadDetail(); }}
               onError={setError}
+              onInfo={setInfo}
               liveTick={liveTick}
             />
           </div>

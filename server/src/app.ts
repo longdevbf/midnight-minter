@@ -149,15 +149,15 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   app.post('/api/wallets/:id/retry', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!ctx.store.getWallet(id)) return fail(reply, 404, 'Không tìm thấy ví');
-    engine().retryWallet(id);
-    return reply.status(202).send({ ok: true });
+    const queued = engine().retryWallet(id);
+    return reply.status(202).send({ ok: true, queued });
   });
 
   app.post('/api/wallets/:id/refresh', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!ctx.store.getWallet(id)) return fail(reply, 404, 'Không tìm thấy ví');
-    engine().refreshWallet(id);
-    return reply.status(202).send({ ok: true });
+    const queued = engine().refreshWallet(id);
+    return reply.status(202).send({ ok: true, queued });
   });
 
   app.post('/api/wallets/:id/seed', async (req, reply) => {
@@ -172,8 +172,8 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   app.post('/api/tokens/:id/retry', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!ctx.store.getToken(id)) return fail(reply, 404, 'Không tìm thấy token');
-    engine().enqueueToken(id);
-    return reply.status(202).send({ ok: true });
+    const queued = engine().enqueueToken(id);
+    return reply.status(202).send({ ok: true, queued });
   });
 
   app.post('/api/mint', async (req, reply) => {

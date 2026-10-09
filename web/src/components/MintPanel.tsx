@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { PublicToken, PublicWallet } from '../../../server/src/types';
 import { api } from '../api';
+import { queuedInfo } from '../lib/queued';
 import { planNames, validateImageFile, validateRows, validateTemplate, type Overrides } from '../lib/mint-plan';
 import { isBatchSettled, mergeBatch, stepStates, summarize, summaryText, type StepState } from '../lib/mint-progress';
 import { StatusBadge } from './StatusBadge';
@@ -9,6 +10,7 @@ interface Props {
   wallets: PublicWallet[];
   onMinted: () => void;
   onError: (m: string) => void;
+  onInfo?: (m: string) => void;
   /** Tăng mỗi lần server báo có thay đổi (SSE); dùng để làm mới bảng tiến trình. */
   liveTick: number;
 }
@@ -39,7 +41,7 @@ function Field({ label, error, hint, children }: {
   );
 }
 
-export function MintPanel({ wallets, onMinted, onError, liveTick }: Props) {
+export function MintPanel({ wallets, onMinted, onError, onInfo, liveTick }: Props) {
   const ready = wallets.filter((w) => w.status === 'ready');
   const [selected, setSelected] = useState<string[]>([]);
   const [name, setName] = useState('Papa Coin #{n}');
@@ -161,7 +163,8 @@ export function MintPanel({ wallets, onMinted, onError, liveTick }: Props) {
     if (retrying.includes(token.id)) return;
     setRetrying((r) => [...r, token.id]);
     try {
-      await api.retryToken(token.id);
+      const info = queuedInfo(await api.retryToken(token.id));
+      if (info) onInfo?.(info);
       void refresh(batchRef.current);
     } catch (err) {
       onError(errText(err));

@@ -1,4 +1,5 @@
 import type { PublicToken, PublicWallet } from '../../server/src/types';
+import type { QueuedResult } from './lib/queued';
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -58,10 +59,10 @@ export const api = {
   createWallets: (count: number, kind: 'child' | 'treasury' = 'child') =>
     req<PublicWallet[]>('/api/wallets', json('POST', { count, kind })),
   wallet: (id: string) => req<{ wallet: PublicWallet; tokens: PublicToken[] }>(`/api/wallets/${id}`),
-  retryWallet: (id: string) => req<{ ok: true }>(`/api/wallets/${id}/retry`, json('POST')),
-  refreshWallet: (id: string) => req<{ ok: true }>(`/api/wallets/${id}/refresh`, json('POST')),
+  retryWallet: (id: string) => req<QueuedResult>(`/api/wallets/${id}/retry`, json('POST')),
+  refreshWallet: (id: string) => req<QueuedResult>(`/api/wallets/${id}/refresh`, json('POST')),
   seed: (id: string, password: string) => req<{ mnemonic: string }>(`/api/wallets/${id}/seed`, json('POST', { password })),
-  retryToken: (id: string) => req<{ ok: true }>(`/api/tokens/${id}/retry`, json('POST')),
+  retryToken: (id: string) => req<QueuedResult>(`/api/tokens/${id}/retry`, json('POST')),
   mint(payload: MintPayload, image: File) {
     const form = new FormData();
     form.append('payload', JSON.stringify(payload));

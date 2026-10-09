@@ -112,16 +112,16 @@ export class Engine {
     return created;
   }
 
-  retryWallet(id: string) {
-    this.queue.enqueue({ type: 'wallet', id });
+  retryWallet(id: string): boolean {
+    return this.queue.enqueue({ type: 'wallet', id });
   }
 
-  refreshWallet(id: string) {
-    this.queue.enqueue({ type: 'refresh', id });
+  refreshWallet(id: string): boolean {
+    return this.queue.enqueue({ type: 'refresh', id });
   }
 
-  enqueueToken(id: string) {
-    this.queue.enqueue({ type: 'token', id });
+  enqueueToken(id: string): boolean {
+    return this.queue.enqueue({ type: 'token', id });
   }
 
   /** Chạy tiếp việc dở dang sau khi mở lại app. */
