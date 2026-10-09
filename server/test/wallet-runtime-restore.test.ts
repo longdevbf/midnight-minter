@@ -85,6 +85,7 @@ import { ShieldedCoinPublicKey, UnshieldedAddress, WalletFacade } from '@midnigh
 import { deriveKeys, newMnemonic, type WalletKeys } from '../src/chain/keys';
 import { getNetworkConfig } from '../src/config/networks';
 import { openWallet, snapshotWallet } from '../src/chain/wallet-runtime';
+import { SnapshotSkipped } from '../src/chain/types';
 
 const network = getNetworkConfig('preview', {});
 const SNAP = { shielded: 'snapS', unshielded: 'snapU', dust: 'snapD' };
@@ -96,6 +97,27 @@ const identityOf = (keys: WalletKeys) => () =>
     unshielded: { address: new UnshieldedAddress(Buffer.from(keys.unshieldedAddressBytes)) },
     shielded: { coinPublicKey: ShieldedCoinPublicKey.fromHexString(keys.shielded.coinPublicKey) },
   });
+
+/** FacadeState giả đủ trường mà snapshotWallet đọc; mặc định không có giao dịch chờ. */
+const fullState = (
+  keys: WalletKeys,
+  over: { shieldedPending?: unknown[]; shieldedSpends?: number; unshieldedPending?: unknown[]; dustPending?: unknown[]; pending?: unknown[] } = {},
+) => ({
+  isSynced: true,
+  shielded: {
+    coinPublicKey: ShieldedCoinPublicKey.fromHexString(keys.shielded.coinPublicKey),
+    pendingCoins: over.shieldedPending ?? [],
+    state: { state: { pendingSpends: new Map(Array.from({ length: over.shieldedSpends ?? 0 }, (_, i) => [`n${i}`, {}])) } },
+    serialize: () => 'S!',
+  },
+  unshielded: {
+    address: new UnshieldedAddress(Buffer.from(keys.unshieldedAddressBytes)),
+    pendingCoins: over.unshieldedPending ?? [],
+    serialize: () => 'U!',
+  },
+  dust: { pendingCoins: over.dustPending ?? [], serialize: () => 'D!' },
+  pending: { all: over.pending ?? [] },
+});
 
 const facades = () => sdk.facades as FakeFacade[];
 const subWallets = () => sdk.subWallets as SubWallet[];
@@ -125,14 +147,15 @@ describe('openWallet: khôi phục từ snapshot, lỗi thì tự đồng bộ l
   });
 
   it('snapshot đúng ví: ba ví con dùng restore, start bằng khóa như cũ, restored = true', async () => {
-    sdk.states[0] = identityOf(keys);
+    sdk.states[0] = () => Rx.of(fullState(keys));
     const w = await openWallet(network, keys, SNAP);
     expect(w.restored).toBe(true);
     expect(sdk.log).toEqual(['shielded:restore:snapS', 'unshielded:restore:snapU', 'dust:restore:snapD']);
     expect(facades()).toHaveLength(1);
     expect(facades()[0].start).toHaveBeenCalledWith(keys.shielded, keys.dust);
     expect(facades()[0].stop).not.toHaveBeenCalled();
-    expect(await snapshotWallet(w)).toEqual({ shielded: 'S#0', unshielded: 'U#0', dust: 'D#0' });
+    // chụp đúng lần phát state() đã kiểm tra (không gọi serializeState riêng từng ví)
+    expect(await snapshotWallet(w)).toEqual({ shielded: 'S!', unshielded: 'U!', dust: 'D!' });
     await w.close();
   });
 
@@ -140,6 +163,8 @@ describe('openWallet: khôi phục từ snapshot, lỗi thì tự đồng bộ l
     sdk.restoreThrows = 'unshielded';
     const w = await openWallet(network, keys, SNAP);
     expect(w.restored).toBe(false);
+    // restore chạy TRƯỚC WalletFacade.init: init chỉ được gọi một lần, cho đường đồng bộ lại từ đầu
+    expect(WalletFacade.init).toHaveBeenCalledTimes(1);
     expect(sdk.log).toEqual([
       'shielded:restore:snapS', 'unshielded:restore:snapU',
       'shielded:keys', 'unshielded:keys', 'dust:keys',
@@ -213,5 +238,53 @@ describe('openWallet: khôi phục từ snapshot, lỗi thì tự đồng bộ l
     expect(facades()).toHaveLength(2);
     expect(facades()[0].stop).toHaveBeenCalledTimes(1);
     expect(facades()[1].stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('snapshotWallet: từ chối chụp khi còn giao dịch chờ (fix round 1)', () => {
+  let keys: WalletKeys;
+
+  beforeEach(async () => {
+    sdk.log.length = 0;
+    sdk.restoreThrows = null;
+    sdk.startErrors = [];
+    sdk.states = [];
+    sdk.facades.length = 0;
+    sdk.subWallets.length = 0;
+    keys = await deriveKeys(newMnemonic(), network.networkId);
+  });
+
+  it('không có gì chờ: trả ba chuỗi serialize() của cùng một lần phát state()', async () => {
+    sdk.states[0] = () => Rx.of(fullState(keys));
+    const w = await openWallet(network, keys);
+    expect(await snapshotWallet(w)).toEqual({ shielded: 'S!', unshielded: 'U!', dust: 'D!' });
+    await w.close();
+  });
+
+  it.each([
+    ['shielded.pendingCoins (đầu ra chờ)', { shieldedPending: [{}] }],
+    ['shielded pendingSpends (coin đang tiêu)', { shieldedSpends: 1 }],
+    ['unshielded.pendingCoins (UTXO đã đặt chỗ)', { unshieldedPending: [{}] }],
+    ['dust.pendingCoins (DUST đang tiêu)', { dustPending: [{}] }],
+    ['state.pending (giao dịch facade đang theo dõi)', { pending: [{}] }],
+  ])('%s khác rỗng: ném SnapshotSkipped, không serialize', async (_name, over) => {
+    const s = fullState(keys, over);
+    const serialize = vi.fn(() => 'x');
+    s.shielded.serialize = serialize;
+    s.unshielded.serialize = serialize;
+    s.dust.serialize = serialize;
+    sdk.states[0] = () => Rx.of(s);
+    const w = await openWallet(network, keys);
+    const err = await snapshotWallet(w).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SnapshotSkipped);
+    expect(serialize).not.toHaveBeenCalled();
+    await w.close();
+  });
+
+  it('state() không phát gì: hết hạn thì từ chối (không treo, không rò subscription)', async () => {
+    sdk.states[0] = () => Rx.NEVER;
+    const w = await openWallet(network, keys);
+    await expect(snapshotWallet(w, { stateTimeoutMs: 20 })).rejects.toThrow();
+    await w.close();
   });
 });

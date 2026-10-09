@@ -25,10 +25,24 @@ export interface WalletSnapshot {
   dust: string;
 }
 
+/**
+ * snapshot() từ chối chụp vì ví còn giao dịch chờ (coin đang đặt chỗ/đang tiêu, giao dịch chưa có kết quả).
+ * Không phải lỗi: người gọi giữ nguyên snapshot cũ (sạch) và thử lại lần sau.
+ */
+export class SnapshotSkipped extends Error {
+  constructor(message = 'Ví còn giao dịch chờ, bỏ qua lưu snapshot') {
+    super(message);
+    this.name = 'SnapshotSkipped';
+  }
+}
+
 export interface ChainWallet {
   /** true chỉ khi lần mở này thực sự khởi động từ snapshot (không phải đồng bộ lại từ đầu). */
   readonly restored: boolean;
-  /** Chụp trạng thái hiện tại của ba ví con (để lần mở sau khỏi đồng bộ lại từ đầu). */
+  /**
+   * Chụp trạng thái hiện tại của ba ví con (để lần mở sau khỏi đồng bộ lại từ đầu).
+   * Ném SnapshotSkipped khi ví còn giao dịch chờ (xem wallet-runtime.snapshotWallet).
+   */
   snapshot(): Promise<WalletSnapshot>;
   balances(sync: boolean): Promise<{ night: bigint; dust: bigint; synced: boolean }>;
   waitNight(min: bigint, timeoutMs: number): Promise<boolean>;
