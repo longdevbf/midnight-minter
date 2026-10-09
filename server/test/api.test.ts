@@ -412,4 +412,55 @@ describe('API', () => {
     expect((await app.inject({ method: 'POST', url: '/api/tokens/khong-co/retry' })).statusCode).toBe(404);
     await engine.idle();
   });
+
+  describe('Host/Origin allowlist (F5)', () => {
+    it('Host lạ bị 403 trên /api/status, /api/wallets, /api/events', async () => {
+      for (const url of ['/api/status', '/api/wallets', '/api/events']) {
+        const r = await app.inject({ url, headers: { host: 'evil.example' } });
+        expect(r.statusCode).toBe(403);
+        expect(r.json().error).toBe('Yêu cầu bị từ chối (Host không hợp lệ)');
+      }
+    });
+
+    it('Host hợp lệ (localhost, 127.0.0.1, [::1], hoa thường, có cổng) được chấp nhận', async () => {
+      for (const host of ['localhost', 'LocalHost:8787', '127.0.0.1:8787', '[::1]:8787', '[::1]']) {
+        const r = await app.inject({ url: '/api/status', headers: { host } });
+        expect(r.statusCode, host).toBe(200);
+      }
+    });
+
+    it('Host giả mạo kiểu localhost.evil.example hoặc có userinfo bị từ chối', async () => {
+      for (const host of ['localhost.evil.example', 'evil.example:8787', '127.0.0.1.evil.example']) {
+        expect((await app.inject({ url: '/api/status', headers: { host } })).statusCode, host).toBe(403);
+      }
+    });
+
+    it('POST với Origin lạ bị 403 (/api/wallets và /api/mint); Origin không hợp lệ cũng bị từ chối', async () => {
+      await unlock();
+      for (const url of ['/api/wallets', '/api/mint']) {
+        const r = await app.inject({ method: 'POST', url, payload: { count: 1 }, headers: { origin: 'https://evil.example' } });
+        expect(r.statusCode, url).toBe(403);
+        expect(r.json().error).toBe('Yêu cầu bị từ chối (Origin không hợp lệ)');
+      }
+      const bad = await app.inject({ method: 'POST', url: '/api/wallets', payload: { count: 1 }, headers: { origin: 'khong phai url' } });
+      expect(bad.statusCode).toBe(403);
+      expect(store.listWallets()).toHaveLength(0);
+    });
+
+    it('Origin localhost:5173 được phép; không có Origin cũng được; GET với Origin lạ không bị chặn bởi Origin', async () => {
+      await unlock();
+      const ok = await app.inject({ method: 'POST', url: '/api/wallets', payload: { count: 1 }, headers: { origin: 'http://localhost:5173' } });
+      expect(ok.statusCode).toBe(201);
+      await engine.idle();
+      const noOrigin = await app.inject({ method: 'POST', url: '/api/wallets', payload: { count: 1 } });
+      expect(noOrigin.statusCode).toBe(201);
+      await engine.idle();
+      expect((await app.inject({ url: '/api/wallets', headers: { origin: 'https://evil.example' } })).statusCode).toBe(200);
+    });
+
+    it('Host lạ bị chặn trước cả cổng xác thực (không lộ 401)', async () => {
+      const r = await app.inject({ url: '/api/wallets', headers: { host: 'evil.example' } });
+      expect(r.statusCode).toBe(403);
+    });
+  });
 });
