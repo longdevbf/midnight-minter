@@ -80,8 +80,9 @@ label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color:
 .wallet[data-tone='ok'] { border-left-color: var(--ok); }
 .wallet[data-tone='bad'] { border-left-color: var(--bad); }
 .wallet[data-tone='busy'] { border-left-color: var(--busy); }
-.wallet:hover { border-color: var(--line-strong); border-left-width: 4px; }
-.wallet.selected { background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); border-color: var(--accent); }
+/* Hover/chọn chỉ đổi 3 cạnh còn lại; border-left-color luôn thuộc về vạch trạng thái. */
+.wallet:hover { border-top-color: var(--line-strong); border-right-color: var(--line-strong); border-bottom-color: var(--line-strong); }
+.wallet.selected { background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); border-top-color: var(--accent); border-right-color: var(--accent); border-bottom-color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent); }
 .stats { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); }
 .stats b { color: var(--text); font-weight: 600; }
 .empty { padding: 12px 0; }

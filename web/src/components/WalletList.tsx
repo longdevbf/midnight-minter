@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { PublicWallet } from '../../../server/src/types';
 import { DUST_DECIMALS, NIGHT_DECIMALS, formatUnits, shortAddr } from '../../../shared/units';
 import { api } from '../api';
+import { formatCompactUnits } from '../lib/format';
 import { statusTone } from '../lib/labels';
 import { StatusBadge } from './StatusBadge';
 
@@ -38,14 +39,14 @@ export function WalletList({ wallets, selectedId, onSelect, onChanged, onError }
           {busy ? 'Đang tạo…' : count === 1 ? 'Tạo ví mới' : `Tạo ${count} ví`}
         </button>
       </div>
-      <ul className="wallets" role="listbox" aria-label="Danh sách ví">
+      <ul className="wallets" aria-label="Danh sách ví">
         {wallets.length === 0 && <li className="muted empty">Chưa có ví nào. Chọn số lượng rồi bấm tạo ví.</li>}
         {wallets.map((w) => (
           <li key={w.id}>
             <button
               className={w.id === selectedId ? 'wallet selected' : 'wallet'}
               data-tone={statusTone(w.status)}
-              role="option" aria-selected={w.id === selectedId}
+              aria-current={w.id === selectedId ? 'true' : undefined}
               onClick={() => onSelect(w.id)}
             >
               <div className="row between nowrap">
@@ -55,7 +56,7 @@ export function WalletList({ wallets, selectedId, onSelect, onChanged, onError }
               <div className="mono small muted" title={w.unshieldedAddress}>{shortAddr(w.unshieldedAddress, 16, 6)}</div>
               <div className="stats small">
                 <span>NIGHT <b className="num">{formatUnits(w.nightBalance, NIGHT_DECIMALS)}</b></span>
-                <span>DUST <b className="num">{formatUnits(w.dustBalance, DUST_DECIMALS).slice(0, 8)}</b></span>
+                <span>DUST <b className="num">{formatCompactUnits(w.dustBalance, DUST_DECIMALS, 6)}</b></span>
                 <span><b className="num">{w.tokenCount}</b> token</span>
               </div>
             </button>

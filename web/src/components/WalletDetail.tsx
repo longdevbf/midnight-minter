@@ -10,16 +10,27 @@ interface Props {
   data: { wallet: PublicWallet; tokens: PublicToken[] } | null;
   /** Đã chọn một ví nhưng dữ liệu chi tiết chưa về. */
   loading?: boolean;
+  /** Lỗi khi tải lần đầu chi tiết ví đang chọn; kèm onReload để thử lại. */
+  loadError?: string | null;
+  onReload?: () => void;
   faucetUrl: string;
   onChanged: () => void;
   onError: (m: string) => void;
 }
 
-export function WalletDetail({ data, loading = false, faucetUrl, onChanged, onError }: Props) {
+export function WalletDetail({ data, loading = false, loadError = null, onReload, faucetUrl, onChanged, onError }: Props) {
   const [seed, setSeed] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const [password, setPassword] = useState('');
 
+  if (!data && loadError) {
+    return (
+      <div className="card empty-state" role="alert">
+        <p>{loadError}</p>
+        {onReload && <button className="btn" onClick={onReload}>Tải lại</button>}
+      </div>
+    );
+  }
   if (!data) {
     return (
       <div className="card empty-state" aria-busy={loading}>
@@ -76,7 +87,7 @@ export function WalletDetail({ data, loading = false, faucetUrl, onChanged, onEr
           <form className="row" onSubmit={(e) => { e.preventDefault(); void reveal(); }}>
             <input
               type="password" autoFocus aria-label="Mật khẩu chủ" placeholder="Mật khẩu chủ"
-              autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)}
+              autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)}
             />
             <button className="btn primary">Hiện</button>
             <button type="button" className="btn" onClick={() => { setAsking(false); setPassword(''); }}>Hủy</button>

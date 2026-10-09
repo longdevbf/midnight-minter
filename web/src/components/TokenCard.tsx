@@ -1,18 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { PublicToken } from '../../../server/src/types';
-import { formatUnits, shortAddr } from '../../../shared/units';
+import { formatUnits } from '../../../shared/units';
 import { api } from '../api';
+import { mintTxField, producedField, requiredField, type FieldState } from '../lib/tokenFields';
 import { CopyButton } from './CopyButton';
 import { StatusBadge } from './StatusBadge';
-
-/** Mint đã xảy ra từ trước trên chain: không có tx mới, tuyệt đối không hiển thị như một mã giao dịch. */
-const ALREADY_MINTED = 'already-minted';
-
-type FieldState =
-  | { kind: 'value'; text: string; full?: string }
-  | { kind: 'missing' }
-  | { kind: 'pending' }
-  | { kind: 'note'; text: string };
 
 function Field({ label, state, mono, onError }: { label: string; state: FieldState; mono?: boolean; onError?: (m: string) => void }) {
   let body: ReactNode;
@@ -32,21 +24,6 @@ function Field({ label, state, mono, onError }: { label: string; state: FieldSta
       <dd className={mono ? 'mono field' : 'field'}>{body}</dd>
     </>
   );
-}
-
-/** Trường bắt buộc có ngay từ lúc tạo: null nghĩa là dữ liệu hỏng, luôn báo "Thiếu". */
-const required = (v: string | null | undefined): FieldState =>
-  v ? { kind: 'value', text: v } : { kind: 'missing' };
-
-/**
- * Trường chỉ có sau một bước của quy trình; `step` là bước tạo ra nó.
- * Null chỉ là "Thiếu" khi bước đó đáng ra đã xong (token hoàn tất, hoặc lỗi ở bước sau nó);
- * ngược lại là "Đang chờ…".
- */
-function produced(token: PublicToken, step: 'deploying' | 'minting', v: string | null, shorten: [number, number]): FieldState {
-  if (v) return { kind: 'value', text: shortAddr(v, shorten[0], shorten[1]), full: v };
-  const shouldExist = token.status === 'done' || (token.status === 'failed' && token.failedStep === 'minting' && step === 'deploying');
-  return shouldExist ? { kind: 'missing' } : { kind: 'pending' };
 }
 
 function TokenImage({ src, name, symbol }: { src: string; name: string; symbol: string }) {
@@ -73,10 +50,6 @@ export function TokenCard({ token, onChanged, onError }: { token: PublicToken; o
     catch (e) { onError?.(e instanceof Error ? e.message : String(e)); }
   }
 
-  const mintTx: FieldState = token.mintTxId === ALREADY_MINTED
-    ? { kind: 'note', text: 'Đã mint trước đó (không có tx mới)' }
-    : produced(token, 'minting', token.mintTxId, [12, 8]);
-
   return (
     <article className="token card">
       <TokenImage src={token.imageGatewayUrl} name={token.name} symbol={token.symbol} />
@@ -86,16 +59,16 @@ export function TokenCard({ token, onChanged, onError }: { token: PublicToken; o
           <StatusBadge status={token.status} kind="token" />
         </div>
         <dl className="kv wide">
-          <Field label="Name" state={required(token.name)} />
-          <Field label="Symbol" state={required(token.symbol)} />
-          <Field label="Decimals" state={required(token.decimals == null ? null : String(token.decimals))} />
-          <Field label="Số lượng" state={required(token.baseUnits == null ? null : formatUnits(token.baseUnits, token.decimals))} />
-          <Field label="Ảnh (IPFS)" state={required(token.imageUri)} mono />
-          <Field label="SHA-256 ảnh" state={required(token.imageSha256)} mono />
-          <Field label="Contract" state={produced(token, 'deploying', token.contractAddress, [14, 10])} mono onError={onError} />
-          <Field label="Màu token" state={produced(token, 'minting', token.tokenColor, [14, 10])} mono onError={onError} />
-          <Field label="Tx deploy" state={produced(token, 'deploying', token.deployTxId, [12, 8])} mono onError={onError} />
-          <Field label="Tx mint" state={mintTx} mono onError={onError} />
+          <Field label="Name" state={requiredField(token.name)} />
+          <Field label="Symbol" state={requiredField(token.symbol)} />
+          <Field label="Decimals" state={requiredField(token.decimals == null ? null : String(token.decimals))} />
+          <Field label="Số lượng" state={requiredField(token.baseUnits == null ? null : formatUnits(token.baseUnits, token.decimals))} />
+          <Field label="Ảnh (IPFS)" state={requiredField(token.imageUri)} mono />
+          <Field label="SHA-256 ảnh" state={requiredField(token.imageSha256)} mono />
+          <Field label="Contract" state={producedField(token, 'deploying', token.contractAddress, [14, 10])} mono onError={onError} />
+          <Field label="Màu token" state={producedField(token, 'minting', token.tokenColor, [14, 10])} mono onError={onError} />
+          <Field label="Tx deploy" state={producedField(token, 'deploying', token.deployTxId, [12, 8])} mono onError={onError} />
+          <Field label="Tx mint" state={mintTxField(token)} mono onError={onError} />
         </dl>
         {token.status === 'failed' && (
           <div className="hint bad">

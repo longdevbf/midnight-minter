@@ -6,15 +6,24 @@ export class ApiError extends Error {
   }
 }
 
+let unauthorizedHandler: (() => void) | null = null;
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
+  let res: Response;
+  try {
+    res = await fetch(path, init);
+  } catch {
+    throw new ApiError('Không kết nối được máy chủ app. Kiểm tra app còn chạy không.', 0);
+  }
   if (!res.ok) {
-    let message = res.statusText;
+    let message = res.statusText || `Lỗi ${res.status}`;
     try {
       message = ((await res.json()) as { error?: string }).error ?? message;
     } catch {
-      /* giữ statusText */
+      /* giữ thông điệp mặc định */
     }
+    // 401 có thể là "phiên đã khóa lại" hoặc "sai mật khẩu chủ"; bên nhận tự hỏi /api/status để phân biệt.
+    if (res.status === 401 && path !== '/api/unlock') unauthorizedHandler?.();
     throw new ApiError(message, res.status);
   }
   return (await res.json()) as T;
@@ -41,6 +50,8 @@ export interface MintPayload {
 }
 
 export const api = {
+  /** Đăng ký hàm được gọi khi một request nhận 401 (trừ lúc mở khóa). */
+  onUnauthorized: (fn: (() => void) | null) => { unauthorizedHandler = fn; },
   status: () => req<Status>('/api/status'),
   unlock: (password: string) => req<{ ok: true }>('/api/unlock', json('POST', { password })),
   wallets: () => req<PublicWallet[]>('/api/wallets'),

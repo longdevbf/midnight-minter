@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PublicToken, PublicWallet } from '../../server/src/types';
 import { api, type Status } from './api';
 import { Unlock } from './components/Unlock';
@@ -15,22 +15,79 @@ export function App() {
   const [wallets, setWallets] = useState<PublicWallet[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ wallet: PublicWallet; tokens: PublicToken[] } | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('wallets');
   const [error, setError] = useState<string | null>(null);
+  /** Đếm request chi tiết: chỉ request mới nhất của lựa chọn hiện tại được phép ghi state. */
+  const detailSeq = useRef(0);
+  const detailRef = useRef(detail);
+  detailRef.current = detail;
 
   const unlocked = status?.unlocked ?? false;
+  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-  const loadStatus = useCallback(() => api.status().then(setStatus).catch((e) => setError(e.message)), []);
-  const loadWallets = useCallback(() => api.wallets().then(setWallets).catch((e) => setError(e.message)), []);
+  const loadStatus = useCallback(async () => {
+    try {
+      const s = await api.status();
+      setStatus(s);
+      return s;
+    } catch (e) {
+      setError(message(e));
+      return null;
+    }
+  }, []);
+  const loadWallets = useCallback(() => api.wallets().then(setWallets).catch((e) => setError(message(e))), []);
   const loadDetail = useCallback(() => {
-    if (!selectedId) return setDetail(null);
-    api.wallet(selectedId).then(setDetail).catch(() => setDetail(null));
+    const seq = ++detailSeq.current;
+    if (!selectedId) {
+      setDetail(null);
+      setDetailError(null);
+      return;
+    }
+    const id = selectedId;
+    api.wallet(id).then((d) => {
+      if (seq !== detailSeq.current) return; // đã có request mới hơn hoặc đã đổi ví
+      setDetail(d);
+      setDetailError(null);
+    }).catch((e) => {
+      if (seq !== detailSeq.current) return;
+      // Không xóa chi tiết đang hiển thị khi refetch lỗi thoáng qua; chỉ báo lỗi.
+      const msg = 'Không tải được chi tiết ví: ' + message(e);
+      if (detailRef.current?.wallet.id === id) setError(msg);
+      else setDetailError(msg);
+    });
   }, [selectedId]);
+
+  const select = (id: string) => {
+    if (id !== selectedId) {
+      setDetail(null); // không bao giờ để dữ liệu của ví trước hiện ra
+      setDetailError(null);
+    }
+    setSelectedId(id);
+    setTab('wallets');
+  };
 
   useEffect(() => { void loadStatus(); }, [loadStatus]);
   useEffect(() => { if (unlocked) void loadWallets(); }, [unlocked, loadWallets]);
   useEffect(() => { loadDetail(); }, [loadDetail]);
   useLive(unlocked, () => { void loadWallets(); loadDetail(); });
+
+  // 401: có thể do server khởi động lại nên phiên bị khóa. Hỏi lại trạng thái; nếu đã khóa thì về màn hình mở khóa.
+  useEffect(() => {
+    api.onUnauthorized(() => {
+      void loadStatus().then((s) => {
+        if (s && !s.unlocked) {
+          detailSeq.current++;
+          setSelectedId(null);
+          setDetail(null);
+          setDetailError(null);
+          setWallets([]);
+          setError(null);
+        }
+      });
+    });
+    return () => api.onUnauthorized(null);
+  }, [loadStatus]);
 
   if (!status) return <div className="center muted" role="status">{error ?? 'Đang tải…'}</div>;
   if (!unlocked) return <Unlock initialized={status.initialized} onDone={loadStatus} />;
@@ -66,13 +123,13 @@ export function App() {
             faucetUrl={status.faucetUrl}
             fundAmount={status.fundAmount}
             onChanged={loadWallets}
-            onSelect={(id) => { setSelectedId(id); setTab('wallets'); }}
+            onSelect={select}
             onError={setError}
           />
           <WalletList
             wallets={children}
             selectedId={selectedId}
-            onSelect={(id) => { setSelectedId(id); setTab('wallets'); }}
+            onSelect={select}
             onChanged={loadWallets}
             onError={setError}
           />
@@ -83,6 +140,8 @@ export function App() {
               key={selectedId ?? 'none'}
               data={detail && detail.wallet.id === selectedId ? detail : null}
               loading={selectedId !== null}
+              loadError={detailError}
+              onReload={() => { setDetailError(null); loadDetail(); }}
               faucetUrl={status.faucetUrl}
               onChanged={() => { void loadWallets(); loadDetail(); }}
               onError={setError}
