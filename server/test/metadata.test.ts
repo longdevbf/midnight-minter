@@ -46,6 +46,12 @@ describe('validateTokenMeta', () => {
     }
   });
 
+  it('từ chối symbol có ký tự ngoài ASCII mà toUpperCase sẽ biến thành ASCII', () => {
+    for (const symbol of ['ß', 'ſ', 'ı', 'ﬁ', 'ßß']) {
+      expect(() => validateTokenMeta({ ...ok, symbol })).toThrow(ValidationError);
+    }
+  });
+
   it('từ chối decimals ngoài 0–18 hoặc không nguyên', () => {
     for (const decimals of [-1, 19, 1.5, '6', null]) {
       expect(() => validateTokenMeta({ ...ok, decimals })).toThrow(ValidationError);
@@ -100,6 +106,11 @@ describe('validateImage', () => {
   it('từ chối ảnh giả: mime là PNG nhưng nội dung không phải', () => {
     expect(() => validateImage(Buffer.from('<html>hi</html>'), 'image/png')).toThrow(ValidationError);
     expect(() => validateImage(JPG, 'image/png')).toThrow(ValidationError);
+  });
+  it('mime trùng tên thuộc tính của Object thì ném ValidationError, không phải TypeError', () => {
+    for (const mime of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) {
+      expect(() => validateImage(PNG, mime)).toThrow(ValidationError);
+    }
   });
   it('từ chối loại không hỗ trợ, ảnh rỗng, ảnh quá 5 MB', () => {
     expect(() => validateImage(PNG, 'image/svg+xml')).toThrow(ValidationError);

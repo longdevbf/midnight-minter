@@ -29,8 +29,8 @@ const Schema = z.object({
   symbol: z
     .string({ required_error: 'Thiếu symbol', invalid_type_error: 'Symbol không hợp lệ' })
     .trim()
-    .transform((s) => s.toUpperCase())
-    .pipe(z.string().regex(/^[A-Z0-9]{1,12}$/, 'Symbol gồm 1–12 chữ cái/số, không dấu, không khoảng trắng')),
+    .regex(/^[A-Za-z0-9]{1,12}$/, 'Symbol gồm 1–12 chữ cái/số, không dấu, không khoảng trắng')
+    .transform((s) => s.toUpperCase()),
   decimals: z
     .number({ required_error: 'Thiếu decimals', invalid_type_error: 'Decimals phải là số' })
     .int('Decimals phải là số nguyên')
@@ -75,7 +75,7 @@ const IMAGE_TYPES: Record<string, { ext: string; matches: (b: Buffer) => boolean
 };
 
 export function validateImage(buf: Buffer, mime: string): { sha256: string; mime: string; ext: string } {
-  const type = IMAGE_TYPES[mime];
+  const type = Object.hasOwn(IMAGE_TYPES, mime) ? IMAGE_TYPES[mime] : undefined;
   if (!type) throw new ValidationError({ image: 'Ảnh phải là PNG, JPEG hoặc WEBP' });
   if (buf.length === 0) throw new ValidationError({ image: 'File ảnh rỗng' });
   if (buf.length > MAX_IMAGE_BYTES) throw new ValidationError({ image: 'Ảnh quá lớn (tối đa 5 MB)' });
