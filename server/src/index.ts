@@ -5,10 +5,14 @@ import { getNetworkConfig } from './config/networks';
 import { openStore } from './db/store';
 import { Engine } from './engine/engine';
 import { createIpfs } from './ipfs/pinata';
+import { installConsoleRedaction, makeRedactor } from './lib/redact';
 import { buildApp } from './app';
 import { createSession } from './session';
 
 const env = loadEnv();
+// Che khóa Blockfrost/Pinata trong mọi dòng log (SDK in nguyên URL RPC kèm ?project_id=<khóa>).
+const redact = makeRedactor([env.blockfrostProjectId, env.pinataJwt]);
+installConsoleRedaction(redact);
 const network = getNetworkConfig(env.network, {
   blockfrostProjectId: env.blockfrostProjectId,
   proofServerUrl: env.proofServerUrl,
@@ -16,6 +20,7 @@ const network = getNetworkConfig(env.network, {
 const store = openStore(resolve(env.dataDir, 'minter.db'));
 const session = createSession(
   store,
+  // TODO(merge): pass redact: redact (EngineDeps.redact do nhánh Engine thêm vào)
   (vault, bus) => new Engine({ store, vault, chain: realChain, network, bus, fundAmount: env.fundAmount }),
 );
 const app = await buildApp({
