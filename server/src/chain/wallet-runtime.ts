@@ -108,7 +108,15 @@ export async function ensureDust(w: OpenWallet, opts: { timeoutMs?: number } = {
   if (unregistered.length > 0) {
     // Lần đăng ký đầu tự trả phí bằng DUST mà NIGHT đã sinh ra từ lúc về ví, nên phải chờ đủ.
     const { fee } = await w.facade.estimateRegistration(unregistered);
-    await w.facade.waitForGeneratedDust(unregistered, fee, { timeoutMs });
+    try {
+      await w.facade.waitForGeneratedDust(unregistered, fee, { timeoutMs });
+    } catch (e) {
+      // SDK ném TimeoutError tiếng Anh ("Timeout has occurred") từ bản rxjs riêng của nó: so theo name.
+      if (e instanceof Rx.TimeoutError || (e instanceof Error && e.name === 'TimeoutError')) {
+        throw new Error('Chờ DUST sinh ra quá lâu. Bấm Thử lại.');
+      }
+      throw e;
+    }
     const recipe = await w.facade.registerNightUtxosForDustGeneration(
       unregistered,
       w.keys.unshieldedKeystore.getPublicKey(),

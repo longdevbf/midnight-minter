@@ -10,13 +10,23 @@ export interface FakeState {
   contracts: Map<string, { minted: boolean; amount: bigint; color: string }>;
   calls: string[];
   failOnce: Set<string>;
+  /** tên thao tác → số lần còn phải ném lỗi (như failOnce nhưng nhiều lần liên tiếp) */
+  failCount: Map<string, number>;
+  /** nếu đặt: nội dung lỗi giả lập (thay cho "lỗi giả lập ở <tên>"), vd. để kiểm tra che khóa bí mật */
+  failMessage: string | null;
   /** tên thao tác ("ensureDust" | "transfer" | "transferAfter" (treo sau khi đã trừ tiền) | "deploy" | "mint" | "balances" (chỉ khi sync=true)) sẽ treo mãi, như khi chờ finalization không bao giờ tới */
   hang: Set<string>;
+  /** tên thao tác → số ms chờ trước khi chạy tiếp (vd. "ensureDust" chậm nhưng vẫn xong) */
+  delayMs: Map<string, number>;
   /** true: transferNight trừ tiền người gửi ngay nhưng hoãn cộng cho người nhận tới khi gọi releaseCredits() */
   holdCredit: boolean;
   pendingCredits: Array<{ to: string; amount: bigint }>;
   opened: number;
+  /** >0: open() chỉ trả ví sau ngần này ms (như đồng bộ lần đầu chậm) */
+  openDelayMs: number;
   closed: number;
+  /** mnemonic của từng ví bị đóng, theo thứ tự */
+  closedMnemonics: string[];
   balanceCalls: number;
 }
 
@@ -26,20 +36,28 @@ export interface FakeState {
  */
 export function makeFakeChain() {
   const state: FakeState = {
-    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), hang: new Set(), holdCredit: false, pendingCredits: [],
-    opened: 0, closed: 0, balanceCalls: 0,
+    night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), failCount: new Map(), failMessage: null, hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
+    opened: 0, openDelayMs: 0, closed: 0, closedMnemonics: [], balanceCalls: 0,
   };
   const addrToMnemonic = new Map<string, string>();
   let seq = 0;
 
   const maybeHang = async (name: string) => {
+    const delay = state.delayMs.get(name);
+    if (delay) await new Promise((r) => setTimeout(r, delay));
     if (state.hang.has(name)) await new Promise<never>(() => undefined);
   };
 
   const maybeFail = (name: string) => {
+    const fail = () => new Error(state.failMessage ?? `lỗi giả lập ở ${name}`);
     if (state.failOnce.has(name)) {
       state.failOnce.delete(name);
-      throw new Error(`lỗi giả lập ở ${name}`);
+      throw fail();
+    }
+    const left = state.failCount.get(name) ?? 0;
+    if (left > 0) {
+      state.failCount.set(name, left - 1);
+      throw fail();
     }
   };
 
@@ -47,11 +65,14 @@ export function makeFakeChain() {
     async open(network: NetworkConfig, mnemonic: string): Promise<ChainWallet> {
       state.opened++;
       addrToMnemonic.set((await deriveKeys(mnemonic, network.networkId)).unshieldedAddress, mnemonic);
+      if (state.openDelayMs > 0) await new Promise((r) => setTimeout(r, state.openDelayMs));
       const w: ChainWallet = {
         async balances(sync: boolean) {
           state.balanceCalls++;
-          if (sync) await maybeHang('balances');
-          else maybeFail('balancesFinal');
+          if (sync) {
+            await maybeHang('balances');
+            maybeFail('balances');
+          } else maybeFail('balancesFinal');
           return { night: state.night.get(mnemonic) ?? 0n, dust: state.dust.get(mnemonic) ?? 0n, synced: true };
         },
         async waitNight(min) {
@@ -98,6 +119,7 @@ export function makeFakeChain() {
         },
         async close() {
           state.closed++;
+          state.closedMnemonics.push(mnemonic);
         },
       };
       return w;
