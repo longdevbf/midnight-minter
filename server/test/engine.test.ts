@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Engine, type EngineDeps } from '../src/engine/engine';
 import { openStore, type Store } from '../src/db/store';
 import { createVault, makeSalt } from '../src/lib/vault';
@@ -9,6 +9,15 @@ import type { TokenRecord } from '../src/types';
 
 const FUND = 100_000_000n;
 const network = getNetworkConfig('preview', {});
+
+// Engine ghi log trạng thái snapshot (console.log): chặn để đầu ra test sạch.
+let silenceLog: { mockRestore(): void } | undefined;
+beforeEach(() => {
+  silenceLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+});
+afterEach(() => {
+  silenceLog?.mockRestore();
+});
 
 type SetupOpts = Partial<Omit<EngineDeps, 'store' | 'vault' | 'chain' | 'network' | 'bus' | 'fundAmount'>>;
 

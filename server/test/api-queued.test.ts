@@ -11,6 +11,15 @@ import { makeFakeChain } from './fake-chain';
 const PASSWORD = 'mat-khau-chu-123';
 const network = getNetworkConfig('preview', {});
 
+// Engine ghi log trạng thái snapshot (console.log): chặn để đầu ra test sạch.
+let silenceLog: { mockRestore(): void } | undefined;
+beforeEach(() => {
+  silenceLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+});
+afterEach(() => {
+  silenceLog?.mockRestore();
+});
+
 describe('API — retry/refresh trả { ok, queued } (F12)', () => {
   let app: FastifyInstance;
   let store: Store;

@@ -3,6 +3,7 @@ import * as ledger from '@midnight-ntwrk/midnight-js-protocol/ledger';
 import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import {
   DustWallet,
+  type FacadeState,
   MidnightBech32m,
   NoOpTransactionHistoryStorage,
   PublicKey,
@@ -14,7 +15,7 @@ import {
 import * as Rx from 'rxjs';
 import type { NetworkConfig } from '../config/networks';
 import type { WalletKeys } from './keys';
-import type { WalletSnapshot } from './types';
+import { SnapshotSkipped, type WalletSnapshot } from './types';
 
 const NIGHT = ledger.unshieldedToken().raw;
 
@@ -70,26 +71,35 @@ async function tryRestore(
   network: NetworkConfig,
   identityCheckTimeoutMs: number,
 ): Promise<WalletFacade | null> {
-  // restore() giải mã trạng thái ngay khi dựng và ném nếu hỏng: ví con dựng trước đó phải được dừng.
+  // restore() giải mã trạng thái ngay khi dựng và ném nếu hỏng. Dựng cả ba TRƯỚC WalletFacade.init để snapshot
+  // hỏng lộ ra trước khi init tạo các dịch vụ mặc định; ví con đã dựng trước cái bị lỗi phải được dừng.
   const built: Array<{ stop(): Promise<void> }> = [];
   const track = <T extends { stop(): Promise<void> }>(w: T): T => {
     built.push(w);
     return w;
   };
+  const stopBuilt = () => Promise.all(built.map((w) => w.stop().catch(() => undefined)));
+  let wallets;
+  try {
+    wallets = {
+      shielded: track(ShieldedWallet(configuration).restore(snapshot.shielded)),
+      unshielded: track(UnshieldedWallet(configuration).restore(snapshot.unshielded)),
+      dust: track(DustWallet(configuration).restore(snapshot.dust)),
+    };
+  } catch {
+    await stopBuilt();
+    return null;
+  }
   let facade: WalletFacade;
   try {
     facade = await initAndStart(
       configuration,
-      {
-        shielded: (cfg) => track(ShieldedWallet(cfg).restore(snapshot.shielded)),
-        unshielded: (cfg) => track(UnshieldedWallet(cfg).restore(snapshot.unshielded)),
-        dust: (cfg) => track(DustWallet(cfg).restore(snapshot.dust)),
-      },
+      { shielded: () => wallets.shielded, unshielded: () => wallets.unshielded, dust: () => wallets.dust },
       keys,
     );
   } catch {
     // initAndStart đã dừng facade nếu start lỗi; init lỗi thì chỉ còn các ví con đã dựng.
-    await Promise.all(built.map((w) => w.stop().catch(() => undefined)));
+    await stopBuilt();
     return null;
   }
   if (await identityMatches(facade, keys, network, identityCheckTimeoutMs)) return facade;
@@ -148,14 +158,44 @@ export async function openWallet(
   return { facade, keys, network, restored: false, close: () => facade.stop() };
 }
 
-/** Chụp trạng thái ba ví con để lần mở sau khôi phục (xem openWallet). */
-export async function snapshotWallet(w: OpenWallet): Promise<WalletSnapshot> {
-  const [shielded, unshielded, dust] = await Promise.all([
-    w.facade.shielded.serializeState(),
-    w.facade.unshielded.serializeState(),
-    w.facade.dust.serializeState(),
-  ]);
-  return { shielded, unshielded, dust };
+/** Hạn chờ lần phát state() khi chụp snapshot (Engine còn bọc thêm snapshotTimeoutMs). */
+const DEFAULT_SNAPSHOT_STATE_TIMEOUT_MS = 30_000;
+
+/** Lý do không được chụp: ví còn thứ gì đó "đang chờ", hoặc null nếu sạch. */
+function pendingReason(s: FacadeState): string | null {
+  if (s.shielded.pendingCoins.length > 0) return 'shielded: đầu ra chờ';
+  // pendingCoins của shielded chỉ là pendingOutputs; coin đang bị tiêu nằm riêng ở pendingSpends.
+  if (s.shielded.state.state.pendingSpends.size > 0) return 'shielded: coin đang tiêu';
+  if (s.unshielded.pendingCoins.length > 0) return 'unshielded: UTXO đã đặt chỗ';
+  if (s.dust.pendingCoins.length > 0) return 'dust: DUST đang tiêu';
+  if (s.pending.all.length > 0) return 'giao dịch đang theo dõi';
+  return null;
+}
+
+/**
+ * Chụp trạng thái ba ví con để lần mở sau khôi phục (xem openWallet).
+ *
+ * TỪ CHỐI (ném SnapshotSkipped) khi còn bất cứ thứ gì đang chờ: coin/UTXO/DUST đã đặt chỗ cho một giao dịch, đầu ra
+ * chờ, hoặc giao dịch facade còn theo dõi. Lý do: cả ba trạng thái serialize đều mang theo các mục "chờ" này, nhưng
+ * đồng bộ từ indexer chỉ xoá chúng khi giao dịch THỰC SỰ lên chuỗi; việc hoàn tác giao dịch không bao giờ tới chuỗi
+ * do PendingTransactionsService trong bộ nhớ của facade làm (revertTransaction), và dịch vụ đó KHÔNG nằm trong
+ * snapshot. Lưu lúc đó thì sau khi khôi phục, coin bị khoá vĩnh viễn (số dư khả dụng giảm/về 0) và mỗi lần lưu sau
+ * lại ghi tiếp trạng thái khoá. Snapshot CŨ HƠN nhưng sạch vẫn an toàn (SDK đồng bộ tiếp từ đó), nên người gọi
+ * giữ nguyên snapshot cũ.
+ *
+ * Kiểm tra và serialize dùng CÙNG một lần phát state() (serializeState() của SDK cũng chỉ là
+ * firstValueFrom(state).then(s => s.serialize())), nên không có khe hở giữa kiểm tra và chụp.
+ */
+export async function snapshotWallet(
+  w: OpenWallet,
+  opts: { stateTimeoutMs?: number } = {},
+): Promise<WalletSnapshot> {
+  const s = await Rx.firstValueFrom(
+    w.facade.state().pipe(Rx.timeout(opts.stateTimeoutMs ?? DEFAULT_SNAPSHOT_STATE_TIMEOUT_MS)),
+  );
+  const reason = pendingReason(s);
+  if (reason) throw new SnapshotSkipped(`Ví còn giao dịch chờ (${reason}), bỏ qua lưu snapshot`);
+  return { shielded: s.shielded.serialize(), unshielded: s.unshielded.serialize(), dust: s.dust.serialize() };
 }
 
 export async function readBalances(w: OpenWallet, sync: boolean) {

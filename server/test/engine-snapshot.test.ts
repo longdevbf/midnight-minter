@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Engine, SDK_STATE_VERSION, type EngineDeps } from '../src/engine/engine';
 import { openStore, type Store } from '../src/db/store';
 import { createVault, makeSalt, type Vault } from '../src/lib/vault';
@@ -9,6 +9,17 @@ import type { TokenRecord } from '../src/types';
 
 const FUND = 100_000_000n;
 const network = getNetworkConfig('preview', {});
+
+// Engine ghi log trạng thái snapshot ra console.log: chặn để đầu ra test sạch, và để kiểm tra nội dung.
+const spyLog = () => vi.spyOn(console, 'log').mockImplementation(() => undefined);
+let logSpy: ReturnType<typeof spyLog>;
+beforeEach(() => {
+  logSpy = spyLog();
+});
+afterEach(() => {
+  logSpy.mockRestore();
+});
+const logLines = () => logSpy.mock.calls.map((c) => String(c[0]));
 
 type SetupOpts = Partial<Omit<EngineDeps, 'store' | 'vault' | 'chain' | 'network' | 'bus' | 'fundAmount'>>;
 type Ctx = ReturnType<typeof setup>;
@@ -265,13 +276,12 @@ describe('Engine — lưu snapshot ví đã đồng bộ (R1)', () => {
     expect(ctx.store.getWalletState(id)).toBeNull();
   });
 
-  it('ensureDust quá hạn => ví bị loại: được lưu trước khi đóng, snapshot treo cũng không làm treo', async () => {
+  it('ensureDust quá hạn => ví bị loại và đóng, snapshot treo cũng không làm treo', async () => {
     const ctx = setup({ chainCallTimeoutMs: 10_000, dustTimeoutMs: 40, snapshotTimeoutMs: 20 });
     await readyTreasury(ctx);
     ctx.fake.state.hang.add('ensureDust');
     ctx.fake.state.hang.add('snapshot');
     const closedBefore = ctx.fake.state.closed;
-    const callsBefore = ctx.fake.state.snapshotCalls;
     const [c] = await ctx.engine.createWallets(1, 'child');
     await ctx.engine.idle();
     const w = ctx.store.getWallet(c.id)!;
@@ -280,19 +290,146 @@ describe('Engine — lưu snapshot ví đã đồng bộ (R1)', () => {
     expect(w.message).toMatch(/quá thời gian chờ/);
     expect(ctx.fake.state.closed).toBeGreaterThan(closedBefore);
     expect(ctx.fake.state.closedMnemonics).toContain(mnemonicOf(ctx, c.id));
-    expect(ctx.fake.state.snapshotCalls).toBeGreaterThan(callsBefore); // đã thử lưu trước khi đóng
+    await ctx.engine.closeAll();
+  });
+});
+
+describe('Engine — snapshot không được khoá giao dịch đang chờ (fix round 1)', () => {
+  it('snapshot() từ chối (còn giao dịch chờ): giữ nguyên snapshot cũ, không phải lỗi, ghi log bỏ qua', async () => {
+    const ctx = setup();
+    const id = await readyTreasury(ctx);
+    const before = ctx.store.getWalletState(id)!;
+    ctx.fake.state.snapshotSkip = true;
+    logSpy.mockClear();
+    ctx.engine.refreshWallet(id);
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(id)!.message).toBeNull();
+    expect(ctx.store.getWalletState(id)).toEqual(before);
+    expect(logLines()).toContain('Ví Ví tổng: bỏ qua lưu snapshot (còn giao dịch chờ)');
+    await ctx.engine.closeAll(); // closeAll cũng bị từ chối: dòng cũ vẫn nguyên
+    expect(ctx.store.getWalletState(id)).toEqual(before);
+  });
+
+  it.each([
+    ['Đăng ký DUST', 'ensureDust'],
+    ['Chuyển tNIGHT', 'transfer'],
+  ])('lệnh giao dịch "%s" quá hạn => ví bị loại KHÔNG được lưu ép buộc', async (_label, op) => {
+    const ctx = setup({ chainCallTimeoutMs: 40, dustTimeoutMs: 40, snapshotMinIntervalMs: 60_000 });
+    const tid = await readyTreasury(ctx);
+    ctx.fake.state.hang.add(op);
+    const savesBefore = savesOf(ctx, tid);
+    const callsBefore = ctx.fake.state.snapshotCalls;
+    const [c] = await ctx.engine.createWallets(1, 'child');
+    await ctx.engine.idle();
+    const evicted = op === 'transfer' ? tid : c.id;
+    expect(ctx.store.getWallet(c.id)!.message).toMatch(/quá thời gian chờ/);
+    expect(ctx.fake.state.closedMnemonics).toContain(mnemonicOf(ctx, evicted));
+    if (op === 'transfer') {
+      expect(savesOf(ctx, tid)).toBe(savesBefore);
+    } else {
+      expect(savesOf(ctx, c.id)).toBe(1); // chỉ lần đồng bộ đầu ở funding
+    }
+    expect(ctx.fake.state.snapshotCalls - callsBefore).toBe(1); // đúng lần đồng bộ đầu của ví con
     await ctx.engine.closeAll();
   });
 
-  it('ensureDust quá hạn => ví bị loại: snapshot dùng được thì lưu trước khi đóng', async () => {
-    const ctx = setup({ chainCallTimeoutMs: 10_000, dustTimeoutMs: 40, snapshotMinIntervalMs: 60_000 });
-    await readyTreasury(ctx);
-    ctx.fake.state.hang.add('ensureDust');
-    const [c] = await ctx.engine.createWallets(1, 'child');
+  it('Deploy contract quá hạn => ví bị loại KHÔNG được lưu ép buộc', async () => {
+    const ctx = setup({ chainCallTimeoutMs: 40, snapshotMinIntervalMs: 60_000 });
+    const id = await readyTreasury(ctx);
+    const savesBefore = savesOf(ctx, id);
+    ctx.fake.state.hang.add('deploy');
+    ctx.store.insertToken(token(id, ctx.vault));
+    ctx.engine.enqueueToken('tok1');
     await ctx.engine.idle();
-    expect(ctx.store.getWallet(c.id)!.failedStep).toBe('dust_pending');
-    // lần đồng bộ đầu ở funding (1) + ép buộc khi bị loại (1); các lần đồng bộ khác bị điều tiết
-    expect(savesOf(ctx, c.id)).toBe(2);
+    expect(ctx.store.getToken('tok1')!.status).toBe('failed');
+    expect(ctx.fake.state.closedMnemonics).toContain(mnemonicOf(ctx, id));
+    expect(savesOf(ctx, id)).toBe(savesBefore);
     await ctx.engine.closeAll();
+  });
+
+  it('Đồng bộ ví quá hạn => ví bị loại VẪN được lưu ép buộc (đồng bộ kẹt không có giao dịch chờ)', async () => {
+    const ctx = setup({ syncTimeoutMs: 40, snapshotMinIntervalMs: 60_000 });
+    const id = await readyTreasury(ctx);
+    const savesBefore = savesOf(ctx, id);
+    ctx.fake.state.hang.add('balances');
+    ctx.engine.refreshWallet(id);
+    await ctx.engine.idle();
+    expect(ctx.store.getWallet(id)!.message).toMatch(/quá thời gian chờ/);
+    expect(ctx.fake.state.closedMnemonics).toContain(mnemonicOf(ctx, id));
+    expect(savesOf(ctx, id)).toBe(savesBefore + 1);
+    await ctx.engine.closeAll();
+  });
+});
+
+describe('Engine — log, điều tiết, closeAll song song (fix round 1)', () => {
+  it('log không chứa bí mật: đã lưu / khôi phục / không dùng được', async () => {
+    const ctx = setup();
+    const id = await readyTreasury(ctx);
+    expect(logLines()).toContain('Ví Ví tổng: đã lưu snapshot');
+    await ctx.engine.closeAll();
+
+    logSpy.mockClear();
+    const next = restart(ctx);
+    next.engine.refreshWallet(id);
+    await next.engine.idle();
+    expect(logLines()).toContain('Ví Ví tổng: khôi phục từ snapshot');
+    await next.engine.closeAll();
+
+    logSpy.mockClear();
+    next.store.setWalletState(id, { network: network.name, sdkVersion: SDK_STATE_VERSION, blob: 'v1:AAAA:BBBB:CCCC', savedAt: 1 });
+    const third = restart(ctx);
+    third.engine.refreshWallet(id);
+    await third.engine.idle();
+    expect(logLines()).toContain('Ví Ví tổng: snapshot không dùng được, đã xóa, đồng bộ lại từ đầu');
+    await third.engine.closeAll();
+
+    logSpy.mockClear();
+    const fourth = restart(ctx);
+    fourth.fake.state.rejectSnapshot = true;
+    fourth.engine.refreshWallet(id);
+    await fourth.engine.idle();
+    expect(logLines()).toContain('Ví Ví tổng: snapshot không dùng được, đã xóa, đồng bộ lại từ đầu');
+    expect(logLines()).not.toContain('Ví Ví tổng: khôi phục từ snapshot');
+    await fourth.engine.closeAll();
+
+    const mnemonic = mnemonicOf(ctx, id);
+    const all = logSpy.mock.calls.flat().map(String).join('\n');
+    expect(all).not.toContain(mnemonic.split(' ').slice(0, 3).join(' '));
+    expect(all).not.toContain('v1:');
+    expect(all).not.toContain(fakeSnapshotOf(mnemonic).shielded);
+  });
+
+  it('điều tiết tính cả lần thử thất bại: snapshot() lỗi thì trong khoảng tối thiểu không thử lại sau mỗi lần đồng bộ', async () => {
+    const ctx = setup({ snapshotMinIntervalMs: 60_000 });
+    ctx.fake.state.failCount.set('snapshot', 1_000);
+    const [t] = await ctx.engine.createWallets(1, 'treasury');
+    await ctx.engine.idle(); // funding: đồng bộ một lần => thử lưu một lần (lỗi)
+    expect(ctx.fake.state.snapshotCalls).toBe(1);
+    ctx.engine.refreshWallet(t.id);
+    await ctx.engine.idle();
+    ctx.engine.refreshWallet(t.id);
+    await ctx.engine.idle();
+    expect(ctx.fake.state.snapshotCalls).toBe(1); // không thử lại mỗi lần đồng bộ
+    await ctx.engine.closeAll(); // lưu ép buộc vẫn luôn thử
+    expect(ctx.fake.state.snapshotCalls).toBe(2);
+  });
+
+  it('closeAll() lưu các ví song song: một ví treo không chặn ví khác, xong trong giới hạn', async () => {
+    const ctx = setup({ snapshotTimeoutMs: 300 });
+    const tid = await readyTreasury(ctx);
+    const [c1, c2] = await ctx.engine.createWallets(2, 'child');
+    await ctx.engine.idle();
+    ctx.fake.state.hangSnapshotOf.add(mnemonicOf(ctx, tid));
+    ctx.fake.state.hangSnapshotOf.add(mnemonicOf(ctx, c1.id));
+    const callsBefore = ctx.fake.state.snapshotCalls;
+    const c2Before = savesOf(ctx, c2.id);
+    const started = Date.now();
+    const closing = ctx.engine.closeAll();
+    // song song: cả ba lần chụp bắt đầu trước khi lần treo đầu tiên hết hạn (300 ms)
+    await vi.waitFor(() => expect(ctx.fake.state.snapshotCalls - callsBefore).toBe(3), { timeout: 200, interval: 5 });
+    await closing;
+    expect(Date.now() - started).toBeLessThan(550); // tuần tự sẽ mất >= 600 ms
+    expect(savesOf(ctx, c2.id)).toBe(c2Before + 1);
+    expect(ctx.fake.state.closed).toBe(3);
   });
 });

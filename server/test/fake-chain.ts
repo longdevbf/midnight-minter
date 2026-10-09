@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { deriveKeys } from '../src/chain/keys';
 import type { NetworkConfig } from '../src/config/networks';
-import type { Chain, ChainWallet, DeployArgs, MintArgs, WalletSnapshot } from '../src/chain/types';
+import { SnapshotSkipped, type Chain, type ChainWallet, type DeployArgs, type MintArgs, type WalletSnapshot } from '../src/chain/types';
 
 export interface FakeState {
   /** số dư theo mnemonic */
@@ -35,6 +35,10 @@ export interface FakeState {
   rejectSnapshot: boolean;
   /** số lần gọi snapshot() (kể cả lần lỗi/treo); "snapshot" dùng được với failOnce/failCount/hang/delayMs */
   snapshotCalls: number;
+  /** true: snapshot() từ chối vì còn giao dịch chờ (ném SnapshotSkipped) */
+  snapshotSkip: boolean;
+  /** mnemonic của các ví mà snapshot() treo mãi (riêng từng ví, khác hang('snapshot') treo mọi ví) */
+  hangSnapshotOf: Set<string>;
 }
 
 /** Snapshot giả của một ví: xác định theo mnemonic, không chứa mnemonic. */
@@ -51,7 +55,7 @@ export function makeFakeChain() {
   const state: FakeState = {
     night: new Map(), dust: new Map(), contracts: new Map(), calls: [], failOnce: new Set(), failCount: new Map(), failMessage: null, hang: new Set(), delayMs: new Map(), holdCredit: false, pendingCredits: [],
     opened: 0, openDelayMs: 0, closed: 0, closedMnemonics: [], balanceCalls: 0,
-    openSnapshots: [], rejectSnapshot: false, snapshotCalls: 0,
+    openSnapshots: [], rejectSnapshot: false, snapshotCalls: 0, snapshotSkip: false, hangSnapshotOf: new Set(),
   };
   const addrToMnemonic = new Map<string, string>();
   let seq = 0;
@@ -86,7 +90,9 @@ export function makeFakeChain() {
         async snapshot() {
           state.snapshotCalls++;
           await maybeHang('snapshot');
+          if (state.hangSnapshotOf.has(mnemonic)) await new Promise<never>(() => undefined);
           maybeFail('snapshot');
+          if (state.snapshotSkip) throw new SnapshotSkipped();
           return fakeSnapshotOf(mnemonic);
         },
         async balances(sync: boolean) {

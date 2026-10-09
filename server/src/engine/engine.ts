@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
-import type { ChainWallet, Chain, WalletSnapshot } from '../chain/types';
+import { SnapshotSkipped, type ChainWallet, type Chain, type WalletSnapshot } from '../chain/types';
 import { deriveKeys, newMnemonic } from '../chain/keys';
 import type { NetworkConfig } from '../config/networks';
 import type { Store } from '../db/store';
@@ -55,6 +55,7 @@ export interface EngineDeps {
 export const SDK_STATE_VERSION = '@midnightntwrk/wallet-sdk@1.2.0';
 const DEFAULT_SNAPSHOT_MIN_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 30_000;
+const SNAPSHOT_DROPPED = 'snapshot không dùng được, đã xóa, đồng bộ lại từ đầu';
 
 const isSnapshot = (v: unknown): v is WalletSnapshot =>
   typeof v === 'object' &&
@@ -135,8 +136,10 @@ export class Engine {
     await this.queue.idle();
     // Job vừa chạy xong có thể đã hẹn giờ lần tự thử lại mới. Ví giữ nguyên bước đang làm nên resume() chạy tiếp.
     this.clearAutoRetryTimers();
-    for (const [id, w] of this.open) {
-      await this.saveSnapshot(id, w, true);
+    // Lưu song song (mỗi lần có giới hạn snapshotTimeoutMs): một ví treo không làm các ví khác hết lượt khi tắt máy.
+    const entries = [...this.open];
+    await Promise.allSettled(entries.map(([id, w]) => this.saveSnapshot(id, w, true)));
+    for (const [id, w] of entries) {
       await w.close().catch(() => undefined);
       this.open.delete(id);
     }
@@ -240,7 +243,7 @@ export class Engine {
     walletId: string,
     label: string,
     promise: Promise<T>,
-    opts: { ms?: number; hint?: string } = {},
+    opts: { ms?: number; hint?: string; snapshotOnEvict?: boolean } = {},
   ): Promise<T> {
     try {
       return await withTimeout(promise, opts.ms ?? this.d.chainCallTimeoutMs ?? DEFAULT_CHAIN_CALL_TIMEOUT_MS, label, opts.hint);
@@ -249,8 +252,9 @@ export class Engine {
         const stuck = this.open.get(walletId);
         this.open.delete(walletId);
         if (stuck) {
-          // Lưu trạng thái đã đồng bộ trước khi bỏ ví (có giới hạn thời gian: ví đang kẹt có thể không trả lời).
-          await this.saveSnapshot(walletId, stuck, true);
+          // Chỉ lưu trước khi bỏ ví khi lệnh kẹt là đồng bộ (không có giao dịch dở). Lệnh giao dịch kẹt (chuyển tiền,
+          // deploy, mint, đăng ký DUST) có thể để lại coin đang chờ mà chỉ facade trong bộ nhớ biết hoàn tác: không lưu.
+          if (opts.snapshotOnEvict) await this.saveSnapshot(walletId, stuck, true);
           await stuck.close().catch(() => undefined);
         }
       }
@@ -262,6 +266,7 @@ export class Engine {
   private async syncBalances(walletId: string, cw: ChainWallet) {
     const b = await this.guarded(walletId, 'Đồng bộ ví', cw.balances(true), {
       ms: this.d.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS,
+      snapshotOnEvict: true,
     });
     this.syncedWallets.add(cw);
     await this.saveSnapshot(walletId, cw, false);
@@ -270,7 +275,9 @@ export class Engine {
 
   /**
    * Lưu snapshot (mã hóa bằng vault) của ví đã đồng bộ. Best effort: mọi lỗi bị nuốt, không bao giờ làm hỏng
-   * job và không ghi nội dung lỗi ra đâu. `force` = false thì tối đa một lần mỗi snapshotMinIntervalMs cho mỗi ví.
+   * job và không ghi nội dung lỗi ra đâu. `force` = false thì tối đa một LẦN THỬ (thành công hay không) mỗi
+   * snapshotMinIntervalMs cho mỗi ví: snapshot() treo/lỗi mãi chỉ tốn một lần chờ mỗi khoảng, không phải mỗi lần
+   * đồng bộ. Lưu ép buộc luôn thử. SnapshotSkipped (còn giao dịch chờ) không phải lỗi: giữ nguyên snapshot cũ.
    */
   private async saveSnapshot(walletId: string, cw: ChainWallet, force: boolean): Promise<void> {
     if (!this.syncedWallets.has(cw)) return;
@@ -278,6 +285,7 @@ export class Engine {
       const last = this.lastSnapshotAt.get(walletId);
       const min = this.d.snapshotMinIntervalMs ?? DEFAULT_SNAPSHOT_MIN_INTERVAL_MS;
       if (last !== undefined && Date.now() - last < min) return;
+      this.lastSnapshotAt.set(walletId, Date.now());
     }
     try {
       const snap = await withTimeout(
@@ -292,8 +300,20 @@ export class Engine {
         savedAt: Date.now(),
       });
       this.lastSnapshotAt.set(walletId, Date.now());
+      this.logSnapshot(walletId, 'đã lưu snapshot');
+    } catch (e) {
+      if (e instanceof SnapshotSkipped) this.logSnapshot(walletId, 'bỏ qua lưu snapshot (còn giao dịch chờ)');
+      /* lỗi khác: best effort, lần mở sau dùng snapshot cũ hơn hoặc đồng bộ lại từ đầu */
+    }
+  }
+
+  /** Log trạng thái snapshot: chỉ nhãn ví + câu cố định (không bao giờ blob, seedphrase hay nội dung lỗi). */
+  private logSnapshot(walletId: string, what: string) {
+    try {
+      const label = this.d.store.getWallet(walletId)?.label ?? walletId;
+      console.log((this.d.redact ?? ((s: string) => s))(`Ví ${label}: ${what}`));
     } catch {
-      /* best effort: lần mở sau dùng snapshot cũ hơn hoặc đồng bộ lại từ đầu */
+      /* log không bao giờ được làm hỏng job */
     }
   }
 
@@ -313,6 +333,7 @@ export class Engine {
       /* hỏng / sai khóa: xoá bên dưới */
     }
     this.dropSnapshot(walletId);
+    this.logSnapshot(walletId, SNAPSHOT_DROPPED);
     return undefined;
   }
 
@@ -341,7 +362,12 @@ export class Engine {
       throw e;
     }
     // Chain không dùng được snapshot (đã tự đồng bộ lại từ đầu): snapshot đó vô dụng, xoá.
-    if (snapshot && !opened.restored) this.dropSnapshot(w.id);
+    if (snapshot && !opened.restored) {
+      this.dropSnapshot(w.id);
+      this.logSnapshot(w.id, SNAPSHOT_DROPPED);
+    } else if (snapshot) {
+      this.logSnapshot(w.id, 'khôi phục từ snapshot');
+    }
     this.open.set(w.id, opened);
     await this.trim();
     return opened;
