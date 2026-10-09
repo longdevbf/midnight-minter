@@ -5,7 +5,7 @@ import type { NetworkName } from './networks';
 const EnvSchema = z.object({
   NETWORK: z.enum(['preprod', 'preview']).default('preprod'),
   BLOCKFROST_PROJECT_ID: z.string().trim().min(1).optional(),
-  PINATA_JWT: z.string({ error: 'Thiếu PINATA_JWT trong .env' }).trim().min(20, 'PINATA_JWT không hợp lệ'),
+  PINATA_JWT: z.string({ required_error: 'Thiếu PINATA_JWT trong .env' }).trim().min(20, 'PINATA_JWT không hợp lệ'),
   PROOF_SERVER_URL: z.string().url().optional(),
   PORT: z.coerce.number().int().min(1024).max(65535).default(8787),
   DATA_DIR: z.string().min(1).default('data'),
