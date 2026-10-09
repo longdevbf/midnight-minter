@@ -8,6 +8,11 @@ const mnemonic = process.env.SPIKE_MNEMONIC;
 
 describe.skipIf(!mnemonic)('ví thật (live)', () => {
   it('đồng bộ ví và có tNIGHT + DUST', async () => {
+    try {
+      process.loadEnvFile('.env');
+    } catch {
+      // .env file không tìm thấy, dùng biến môi trường hiện có
+    }
     const env = loadEnv();
     const network = getNetworkConfig(env.network, { blockfrostProjectId: env.blockfrostProjectId, proofServerUrl: env.proofServerUrl });
     const w = await openWallet(network, await deriveKeys(mnemonic!, network.networkId));

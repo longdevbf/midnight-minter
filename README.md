@@ -4,7 +4,8 @@ App chạy local để tạo nhiều ví Midnight, cấp tNIGHT và DUST, rồi 
 
 ## Yêu cầu
 
-- Node 22+, Docker Desktop, WSL 2 (Ubuntu) có Compact compiler 0.31.1
+- **Node 22+**, Docker Desktop
+- **WSL 2** với distro **Ubuntu** (tên chính xác) có Compact CLI với compiler 0.31.1
 - Token Blockfrost cho Midnight Preprod (hoặc `NETWORK=preview`, không cần token)
 - JWT của Pinata để upload ảnh lên IPFS
 
@@ -12,19 +13,40 @@ App chạy local để tạo nhiều ví Midnight, cấp tNIGHT và DUST, rồi 
 
 ```bash
 npm install
-copy .env.example .env     # Windows: cmd/PowerShell
-# cp .env.example .env     # Unix/macOS
 ```
 
-Điền `BLOCKFROST_PROJECT_ID` (preprod) hoặc để trống (preview) và `PINATA_JWT`, rồi:
+Trên Windows (cmd/PowerShell):
+```cmd
+copy .env.example .env
+```
+
+Trên Unix/macOS (bash/zsh):
+```bash
+cp .env.example .env
+```
+
+Điền biến môi trường (xem bảng dưới), rồi:
 
 ```bash
-npm run contract:build   # biên dịch contract qua WSL
-npm run proof:up         # chạy proof server (Docker, cổng 6300)
-npm start                # build giao diện và chạy ở http://127.0.0.1:8787
+npm run contract:build   # biên dịch contract qua WSL Ubuntu
+npm run proof:up         # chạy proof server (Docker, port 6300)
+npm start                # build giao diện & chạy backend ở 127.0.0.1:8787
 ```
 
-Phát triển: `npm run dev:server` (server ở cổng 8787) và `npm run dev:web` (giao diện ở cổng 5173).
+Phát triển: `npm run dev:server` (backend 127.0.0.1:8787) + `npm run dev:web` (UI 127.0.0.1:5173).
+
+## Biến môi trường
+
+| Biến | Mặc định | Mô tả |
+|------|----------|-------|
+| `NETWORK` | `preprod` | `preprod` hoặc `preview` |
+| `BLOCKFROST_PROJECT_ID` | — | Token Blockfrost (bắt buộc trên preprod) |
+| `PINATA_JWT` | — | JWT Pinata (bắt buộc) |
+| `PROOF_SERVER_URL` | `http://localhost:6300` | URL proof server |
+| `PORT` | `8787` | Backend port |
+| `DATA_DIR` | `data` | Thư mục lưu dữ liệu |
+| `IPFS_GATEWAY` | `https://gateway.pinata.cloud/ipfs/` | IPFS gateway URL |
+| `FUND_AMOUNT` | `100` | tNIGHT cấp cho mỗi ví con (6 decimals = 100 × 10^6 units) |
 
 ## Cách dùng
 
@@ -38,7 +60,8 @@ Phát triển: `npm run dev:server` (server ở cổng 8787) và `npm run dev:we
 
 - Mật khẩu chủ: mã hóa seedphrase bằng AES-256-GCM + scrypt
 - Thư mục `data/` và tệp `.env` chứa bí mật: **không commit, không chia sẻ**
-- App chỉ lắng nghe `127.0.0.1` (chỉ máy local)
+- App chỉ lắng nghe `127.0.0.1` (chỉ máy local); proof server cũng chỉ bind `127.0.0.1:6300`
+- **Cảnh báo**: RPC library ghi toàn bộ RPC URL (bao gồm Blockfrost `project_id`) vào console; không chia sẻ server logs public
 
 ## Giới hạn đã biết
 
@@ -48,23 +71,33 @@ Phát triển: `npm run dev:server` (server ở cổng 8787) và `npm run dev:we
 - **Timeout chuỗi**: 30 phút cho lệnh gọi (finalization, findDeployedContract); 60 phút đồng bộ (balances(true)). Nếu deploy timeout, kiểm tra ví trước bấm Thử lại
 - **Metadata**: nằm trong ledger của contract, chưa phát event MIP-0018; Lace và sàn có thể chưa hiển thị dù metadata đầy đủ
 - **Token thử nghiệm**: trên preprod/preview chỉ để thử, chưa có giá trị thật
-- **Lệnh `compact` trên Windows**: là công cụ nén NTFS; compiler Compact thật chỉ chạy trong WSL (script `contract:build` đã xử lý)
+- **Thư mục `midnight-level-db/`**: lưu trữ riêng tư của SDK Midnight; đã trong `.gitignore`
 
 ## Chạy test
 
 ```bash
-npm test              # unit + integration test (không cần mạng)
-npm run test:live     # e2e test trên mạng thật (cần biến SPIKE_MNEMONIC)
+npm test                    # unit + integration (không cần mạng)
+npm run test:live           # e2e trên mạng thật (cần SPIKE_MNEMONIC + setup)
 ```
 
-Biến `SPIKE_MNEMONIC` (đặt trong terminal, **không ghi vào file**):
+### Test e2e (test:live) — Side effects & Prerequisites
 
+**Side effects** (mất tài nguyên):
+- Gửi `FUND_AMOUNT` tNIGHT (mặc định 100) từ treasury wallet sang ví con bỏ đi (seed chỉ lưu in-memory) → **không khôi phục được**
+
+**Prerequisites**:
+1. Ví tổng có mnemonic (SPIKE_MNEMONIC env var) chứa tNIGHT + DUST sẵn
+2. Docker chạy proof server: `npm run proof:up` (nếu port 6300 bị dùng, chạy khác port + set `PROOF_SERVER_URL`)
+3. Contract đã biên dịch: `npm run contract:build`
+4. `.env` có `BLOCKFROST_PROJECT_ID` (preprod) và `PINATA_JWT`
+
+**Chạy**:
 ```bash
-# PowerShell: 
+# PowerShell:
 $env:SPIKE_MNEMONIC="word1 word2 ... word24"; npm run test:live
 
 # Bash:
 SPIKE_MNEMONIC="word1 word2 ... word24" npm run test:live
 ```
 
-Test skip nếu `SPIKE_MNEMONIC` không đặt. Mỗi lần chạy test:live có thể mất vài chục phút (đồng bộ nhiều ví trên preprod).
+Test skip nếu `SPIKE_MNEMONIC` không đặt. Mỗi lần chạy có thể mất 1–2 giờ (đồng bộ nhiều ví trên preprod).

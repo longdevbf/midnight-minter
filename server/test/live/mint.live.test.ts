@@ -8,6 +8,11 @@ const mnemonic = process.env.SPIKE_MNEMONIC;
 
 describe.skipIf(!mnemonic)('deploy + mint token (live)', () => {
   it('deploy contract, mint một lần, và mint lần hai không gửi giao dịch mới', async () => {
+    try {
+      process.loadEnvFile('.env');
+    } catch {
+      // .env file không tìm thấy, dùng biến môi trường hiện có
+    }
     const env = loadEnv();
     const network = getNetworkConfig(env.network, { blockfrostProjectId: env.blockfrostProjectId, proofServerUrl: env.proofServerUrl });
     const w = await realChain.open(network, mnemonic!);
