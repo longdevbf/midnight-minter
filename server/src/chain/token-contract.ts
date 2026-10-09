@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { resolve } from 'node:path';
 import { deployContract, findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
 import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
@@ -8,7 +8,7 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
 import type { CoinPublicKey, EncPublicKey, FinalizedTransaction } from '@midnight-ntwrk/midnight-js-protocol/ledger';
 import type { MidnightProvider, UnboundTransaction, WalletProvider } from '@midnight-ntwrk/midnight-js-types';
-import { ttlOneHour } from '@midnight-ntwrk/midnight-js-utils';
+import { ttlOneHour, validatePassword } from '@midnight-ntwrk/midnight-js-utils';
 import { Contract, ledger } from '../../../managed/token/contract/index.js';
 import type { DeployArgs, MintArgs } from './types';
 import type { OpenWallet } from './wallet-runtime';
@@ -61,20 +61,37 @@ export function buildProviders(w: OpenWallet, privateStatePassword: string) {
   };
 }
 
-/** Mật khẩu kho trạng thái riêng của midnight-js: dẫn xuất ổn định từ seed ví, đủ độ phức tạp. */
-export function privateStatePasswordFor(w: OpenWallet): string {
-  return `Pk-${createHash('sha256').update(w.keys.unshieldedAddress).digest('hex').slice(0, 24)}`;
+/**
+ * Mật khẩu kho trạng thái riêng của midnight-js, dẫn xuất ổn định từ seedphrase (bí mật) của ví.
+ * Không dùng địa chỉ công khai làm nguồn. Thư viện từ chối mật khẩu có chuỗi lặp/tăng giảm liên tiếp
+ * nên thử lần lượt các ứng viên theo bộ đếm cho tới khi validatePassword (bản thật) chấp nhận.
+ */
+export function derivePrivateStatePassword(secret: string): string {
+  for (let n = 0; n < 1000; n++) {
+    const candidate = `Pk-${createHmac('sha256', secret).update(`minter:private-state:v1:${n}`).digest('hex').slice(0, 24)}`;
+    try {
+      validatePassword(candidate);
+      return candidate;
+    } catch {
+      // validatePassword ném PasswordValidationError khi không hợp lệ: thử ứng viên kế tiếp.
+    }
+  }
+  throw new Error('Không tạo được mật khẩu kho trạng thái hợp lệ');
 }
 
-export async function readTokenLedger(w: OpenWallet, contractAddress: string) {
-  const providers = buildProviders(w, privateStatePasswordFor(w));
+export async function readTokenLedger(w: OpenWallet, contractAddress: string, privateStatePassword: string) {
+  const providers = buildProviders(w, privateStatePassword);
   const state = await providers.publicDataProvider.queryContractState(contractAddress);
   if (!state) throw new Error('Không tìm thấy contract trên chuỗi (có thể giao dịch deploy chưa được xác nhận)');
   return ledger(state.data);
 }
 
-export async function deployToken(w: OpenWallet, a: DeployArgs): Promise<{ contractAddress: string; txId: string }> {
-  const providers = buildProviders(w, privateStatePasswordFor(w));
+export async function deployToken(
+  w: OpenWallet,
+  a: DeployArgs,
+  privateStatePassword: string,
+): Promise<{ contractAddress: string; txId: string }> {
+  const providers = buildProviders(w, privateStatePassword);
   const deployed = await deployContract(providers, {
     compiledContract: compiled,
     privateStateId: PRIVATE_STATE_ID,
@@ -90,13 +107,14 @@ export async function deployToken(w: OpenWallet, a: DeployArgs): Promise<{ contr
 export async function mintToken(
   w: OpenWallet,
   a: MintArgs,
+  privateStatePassword: string,
 ): Promise<{ txId: string; tokenColor: string; minted: bigint }> {
-  const before = await readTokenLedger(w, a.contractAddress);
+  const before = await readTokenLedger(w, a.contractAddress, privateStatePassword);
   // Idempotent: nếu lần trước đã mint thành công nhưng app tắt trước khi ghi DB thì không mint lại.
   if (before.minted) {
     return { txId: 'already-minted', tokenColor: Buffer.from(before.token_color).toString('hex'), minted: before.minted_amount };
   }
-  const providers = buildProviders(w, privateStatePasswordFor(w));
+  const providers = buildProviders(w, privateStatePassword);
   const found = await findDeployedContract(providers, {
     contractAddress: a.contractAddress,
     compiledContract: compiled,
@@ -104,7 +122,7 @@ export async function mintToken(
     initialPrivateState: {},
   });
   const result = await found.callTx.mint(a.ownerSecret, a.baseUnits, { bytes: w.keys.unshieldedAddressBytes });
-  const after = await readTokenLedger(w, a.contractAddress);
+  const after = await readTokenLedger(w, a.contractAddress, privateStatePassword);
   if (!after.minted || after.minted_amount !== a.baseUnits) {
     throw new Error('Đã gửi giao dịch mint nhưng ledger trên chuỗi chưa phản ánh đúng số lượng');
   }
