@@ -169,6 +169,20 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     return { mnemonic: vault().decrypt(w.encryptedMnemonic) };
   });
 
+  // Xuất toàn bộ seedphrase: chỉ sau khi xác minh lại mật khẩu chủ; không bao giờ ghi log, không cho cache.
+  app.post('/api/export', async (req, reply) => {
+    const { password } = (req.body ?? {}) as { password?: unknown };
+    if (typeof password !== 'string' || !ctx.session.verifyPassword(password)) return fail(reply, 401, 'Sai mật khẩu chủ');
+    const rows = ctx.store.listWallets().map((w) => ({
+      label: w.label,
+      kind: w.kind,
+      network: w.network,
+      unshieldedAddress: w.unshieldedAddress,
+      mnemonic: vault().decrypt(w.encryptedMnemonic),
+    }));
+    return reply.header('cache-control', 'no-store').send(rows);
+  });
+
   app.post('/api/tokens/:id/retry', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!ctx.store.getToken(id)) return fail(reply, 404, 'Không tìm thấy token');

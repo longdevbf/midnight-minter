@@ -1,4 +1,5 @@
 import type { PublicToken, PublicWallet } from '../../server/src/types';
+import type { ExportedWallet } from './lib/export-seeds';
 import type { QueuedResult } from './lib/queued';
 
 export class ApiError extends Error {
@@ -62,6 +63,7 @@ export const api = {
   retryWallet: (id: string) => req<QueuedResult>(`/api/wallets/${id}/retry`, json('POST')),
   refreshWallet: (id: string) => req<QueuedResult>(`/api/wallets/${id}/refresh`, json('POST')),
   seed: (id: string, password: string) => req<{ mnemonic: string }>(`/api/wallets/${id}/seed`, json('POST', { password })),
+  exportSeeds: (password: string) => req<ExportedWallet[]>('/api/export', json('POST', { password })),
   retryToken: (id: string) => req<QueuedResult>(`/api/tokens/${id}/retry`, json('POST')),
   mint(payload: MintPayload, image: File) {
     const form = new FormData();

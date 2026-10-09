@@ -6,6 +6,7 @@ import { WalletList } from './components/WalletList';
 import { WalletDetail } from './components/WalletDetail';
 import { TreasuryCard } from './components/TreasuryCard';
 import { MintPanel } from './components/MintPanel';
+import { ExportSeeds } from './components/ExportSeeds';
 import { useLive } from './hooks/useLive';
 
 type Tab = 'wallets' | 'mint';
@@ -144,6 +145,7 @@ export function App() {
             onChanged={loadWallets}
             onError={setError}
           />
+          <ExportSeeds onError={setError} />
         </aside>
         <main className="main">
           {tab === 'wallets' && (
