@@ -1,6 +1,30 @@
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/longdevbf/midnight-minter:latest
+    ports:
+      - "${PORT:-8787}:8787"
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /app/data
+      PROOF_SERVER_URL: http://proof-server:6300
+    volumes:
+      - minter-data:/app/data
+    depends_on:
+      proof-server:
+        condition: service_started
+    restart: unless-stopped
+
   proof-server:
     image: midnightntwrk/proof-server:8.0.3
     ports:
       - "127.0.0.1:${PROOF_SERVER_PORT:-6300}:6300"
     restart: unless-stopped
+
+volumes:
+  minter-data:

@@ -7,6 +7,7 @@ const EnvSchema = z.object({
   BLOCKFROST_PROJECT_ID: z.string().trim().min(1).optional(),
   PINATA_JWT: z.string({ required_error: 'Thiếu PINATA_JWT trong .env' }).trim().min(20, 'PINATA_JWT không hợp lệ'),
   PROOF_SERVER_URL: z.string().url().optional(),
+  HOST: z.string().min(1).default('127.0.0.1'),
   PORT: z.coerce.number().int().min(1024).max(65535).default(8787),
   DATA_DIR: z.string().min(1).default('data'),
   IPFS_GATEWAY: z.string().url().default('https://gateway.pinata.cloud/ipfs/'),
@@ -19,6 +20,7 @@ export interface AppEnv {
   blockfrostProjectId?: string;
   pinataJwt: string;
   proofServerUrl?: string;
+  host: string;
   port: number;
   dataDir: string;
   ipfsGateway: string;
@@ -45,6 +47,7 @@ export function loadEnv(src: Record<string, string | undefined> = process.env): 
     blockfrostProjectId: e.BLOCKFROST_PROJECT_ID,
     pinataJwt: e.PINATA_JWT,
     proofServerUrl: e.PROOF_SERVER_URL,
+    host: e.HOST,
     port: e.PORT,
     dataDir: e.DATA_DIR,
     ipfsGateway: e.IPFS_GATEWAY.endsWith('/') ? e.IPFS_GATEWAY : `${e.IPFS_GATEWAY}/`,

@@ -59,5 +59,5 @@ async function shutdown(signal: string) {
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
-await app.listen({ host: '127.0.0.1', port: env.port });
-console.log(`Midnight Minter chạy tại http://127.0.0.1:${env.port} (mạng ${network.name})`);
+await app.listen({ host: env.host, port: env.port });
+console.log(`Midnight Minter chạy tại http://${env.host}:${env.port} (mạng ${network.name})`);

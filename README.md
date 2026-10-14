@@ -33,6 +33,18 @@ npm start                # build giao diện & chạy backend ở 127.0.0.1:8787
 
 Phát triển: `npm run dev:server` (127.0.0.1:8787) + `npm run dev:web` (127.0.0.1:5173).
 
+### Chạy toàn bộ ứng dụng bằng Docker Compose
+
+Sau khi điền `PINATA_JWT` trong `.env`, chạy:
+
+```bash
+docker compose up --build
+```
+
+Ứng dụng mở tại `http://localhost:8787`; dữ liệu SQLite được lưu trong volume
+`minter-data`. Compose tự kết nối ứng dụng với proof server qua tên service
+`proof-server`.
+
 ### Đổi cổng proof server
 
 Compose đọc `PROOF_SERVER_PORT` (mặc định 6300). Trên một số máy Windows, `wslrelay` đã chiếm cổng 6300: `docker compose up` báo "Ports are not available", hoặc tệ hơn là một proof server cũ khác phiên bản đang trả lời ở 6300. Khi đó dùng cổng trống:

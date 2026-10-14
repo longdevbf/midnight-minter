@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log*
+.env
+.git
+.gitignore
+data
+midnight-level-db
+dist
+coverage
+.turbo
+.claude
+docs
+*.db
+*.db-*
