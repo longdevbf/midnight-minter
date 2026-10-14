@@ -28,6 +28,7 @@ const ALLOWED_HOSTNAMES = new Set([
   '127.0.0.1',
   '[::1]',
   '173.212.202.229',
+  'midnight-minter.texlabs.org',
 ]);
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
