@@ -23,7 +23,12 @@ export interface AppContext {
   webDir: string | null;
 }
 
-const ALLOWED_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+const ALLOWED_HOSTNAMES = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  '173.212.202.229',
+]);
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Hostname (chữ thường, không cổng; IPv6 giữ ngoặc vuông) của một URL tuyệt đối; null nếu không phân tích được. */
